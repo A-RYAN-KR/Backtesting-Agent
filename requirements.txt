@@ -1,0 +1,13 @@
+google-genai
+vectorbt
+yfinance
+duckdb
+pandas
+numpy
+scipy
+networkx
+plotly
+quantstats
+python-dotenv
+pydantic
+pandas_ta
