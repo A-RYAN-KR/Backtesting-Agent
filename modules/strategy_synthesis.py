@@ -8,14 +8,11 @@ Module 2: Strategy Synthesis & Skill Library ("The Translator")
 
 import re
 import json
-from google import genai
-from google.genai import types
+import ast
+from config import GEMINI_MODEL
+from modules.nlp_orchestration import stream_chat_completion
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config import GEMINI_API_KEY, GEMINI_MODEL_PRO
-
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -77,6 +74,55 @@ class SkillLibrary:
 # ═══════════════════════════════════════════════════════════
 #  Code Sanitizer
 # ═══════════════════════════════════════════════════════════
+class EntryExitShifter(ast.NodeTransformer):
+    """AST transformer to shift entries by 1 and fillna(False) on entries/exits."""
+
+    def visit_Assign(self, node):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in ('entries', 'exits'):
+                class CallChecker(ast.NodeVisitor):
+                    def __init__(self):
+                        self.has_shift = False
+                        self.has_fillna = False
+                    def visit_Call(self, call_node):
+                        if isinstance(call_node.func, ast.Attribute):
+                            if call_node.func.attr == 'shift':
+                                self.has_shift = True
+                            elif call_node.func.attr == 'fillna':
+                                self.has_fillna = True
+                        self.generic_visit(call_node)
+
+                checker = CallChecker()
+                checker.visit(node.value)
+                current_value = node.value
+
+                if name == 'entries':
+                    if not checker.has_shift:
+                        shift_call = ast.Call(
+                            func=ast.Attribute(value=current_value, attr='shift', ctx=ast.Load()),
+                            args=[ast.Constant(value=1)],
+                            keywords=[]
+                        )
+                        current_value = shift_call
+                        
+                        fillna_call = ast.Call(
+                            func=ast.Attribute(value=current_value, attr='fillna', ctx=ast.Load()),
+                            args=[ast.Constant(value=False)],
+                            keywords=[]
+                        )
+                        node.value = fillna_call
+                elif name == 'exits':
+                    if not checker.has_fillna:
+                        fillna_call = ast.Call(
+                            func=ast.Attribute(value=current_value, attr='fillna', ctx=ast.Load()),
+                            args=[ast.Constant(value=False)],
+                            keywords=[]
+                        )
+                        node.value = fillna_call
+        return node
+
+
 class CodeSanitizer:
     """
     Ensures generated code is safe and free of lookahead bias.
@@ -89,31 +135,97 @@ class CodeSanitizer:
         are not artificially delayed by one bar.
     """
 
+    # Allowlisted import modules — everything else is blocked
+    ALLOWED_IMPORTS = {"pandas_ta"}
+
     @staticmethod
     def enforce_entry_shift(code_string: str) -> str:
         """
         Applies .shift(1) ONLY to entry signals to prevent lookahead bias.
         Exit signals are left untouched so positions can close immediately.
+        Uses AST parsing to safely traverse and modify entry and exit signals.
         """
-        def shift_entries(match):
-            prefix = match.group(1)          # 'entries =' or 'entries='
-            expression = match.group(2).strip()
-            # If the LLM already applied a shift, don't double-shift
-            if ".shift(" in expression:
-                return f"{prefix} {expression}"
-            return f"{prefix} ({expression}).shift(1).fillna(False)"
+        try:
+            tree = ast.parse(code_string)
+            transformer = EntryExitShifter()
+            modified_tree = transformer.visit(tree)
+            ast.fix_missing_locations(modified_tree)
+            return ast.unparse(modified_tree)
+        except Exception as e:
+            print(f"  [WARNING] AST parsing failed during entry shift enforcement: {e}. Falling back to regex.")
+            # Simple fallback using regular expressions
+            def shift_entries(match):
+                prefix = match.group(1)
+                expression = match.group(2).strip()
+                if ".shift(" in expression:
+                    return f"{prefix} {expression}"
+                return f"{prefix} ({expression}).shift(1).fillna(False)"
 
-        def clean_exits(match):
-            prefix = match.group(1)
-            expression = match.group(2).strip()
-            # Leave exits as-is (no shift); just ensure fillna for NaN safety
-            if ".fillna(" in expression:
-                return f"{prefix} {expression}"
-            return f"{prefix} ({expression}).fillna(False)"
+            def clean_exits(match):
+                prefix = match.group(1)
+                expression = match.group(2).strip()
+                if ".fillna(" in expression:
+                    return f"{prefix} {expression}"
+                return f"{prefix} ({expression}).fillna(False)"
 
-        code = re.sub(r'(entries\s*=\s*)([^#\n]+)', shift_entries, code_string)
-        code = re.sub(r'(exits\s*=\s*)([^#\n]+)', clean_exits, code)
-        return code
+            code = re.sub(r'(entries\s*=\s*)([^#\n]+)', shift_entries, code_string)
+            code = re.sub(r'(exits\s*=\s*)([^#\n]+)', clean_exits, code)
+            return code
+
+    @staticmethod
+    def check_security(code_string: str) -> None:
+        """
+        Validates that the code does not contain blocked keywords to prevent RCE.
+        """
+        blocked_keywords = ["import os", "sys", "eval", "open", "__import__"]
+        for kw in blocked_keywords:
+            # Word boundary regex checks to prevent false positives (like 'openalgo', 'system', 'open_prices')
+            # while strictly blocking 'import os', 'sys', 'eval', 'open', '__import__'
+            pattern = r"\b" + re.escape(kw).replace(r"\ ", r"\s+") + r"\b"
+            if re.search(pattern, code_string):
+                raise ValueError(f"Security Error: Blocked keyword '{kw}' detected.")
+
+    @staticmethod
+    def enforce_import_allowlist(code_string: str) -> str:
+        """
+        Uses AST to reject all import statements except those in ALLOWED_IMPORTS.
+        Strips disallowed imports from the code instead of raising, to gracefully
+        handle LLMs that import datetime, math, etc.
+        """
+        try:
+            tree = ast.parse(code_string)
+        except SyntaxError:
+            # If code can't be parsed, skip this check (compile check will catch it later)
+            return code_string
+
+        blocked_lines = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module_root = alias.name.split('.')[0]
+                    if module_root == "pandas_ta":
+                        blocked_lines.add(node.lineno)
+                        print(f"  [WARNING] Stripped pandas_ta import: 'import {alias.name}'")
+                    elif module_root not in CodeSanitizer.ALLOWED_IMPORTS:
+                        blocked_lines.add(node.lineno)
+                        print(f"  [WARNING] Stripped disallowed import: 'import {alias.name}'")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    module_root = node.module.split('.')[0]
+                    if module_root == "pandas_ta":
+                        blocked_lines.add(node.lineno)
+                        print(f"  [WARNING] Stripped pandas_ta import: 'from {node.module} import ...'")
+                    elif module_root not in CodeSanitizer.ALLOWED_IMPORTS:
+                        blocked_lines.add(node.lineno)
+                        print(f"  [WARNING] Stripped disallowed import: 'from {node.module} import ...'")
+
+        if not blocked_lines:
+            return code_string
+
+        # Remove blocked lines
+        lines = code_string.split('\n')
+        cleaned_lines = [line for i, line in enumerate(lines, 1) if i not in blocked_lines]
+        return '\n'.join(cleaned_lines)
 
     @staticmethod
     def normalize_column_access(code_string: str) -> str:
@@ -146,12 +258,55 @@ class CodeSanitizer:
 
     @staticmethod
     def sanitize(code_string: str) -> str:
-        """Full sanitization pipeline."""
+        """
+        Full sanitization pipeline.
+        Raises SyntaxError if the final code does not compile.
+        """
+        # Check security first
+        CodeSanitizer.check_security(code_string)
         # Remove markdown fences if LLM included them
         code = code_string.replace("```python", "").replace("```", "").strip()
+        # Enforce import allowlist (strip disallowed imports via AST)
+        code = CodeSanitizer.enforce_import_allowlist(code)
         # Normalize column access casing (fixes pandas_ta column name mismatches)
         code = CodeSanitizer.normalize_column_access(code)
         code = CodeSanitizer.enforce_entry_shift(code)
+        # Validate that entries and exits variables are explicitly assigned in the AST
+        # This prevents LLM hallucinations of variables like buy_signals/sell_signals.
+        try:
+            tree = ast.parse(code)
+            has_entries = False
+            has_exits = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id == "entries":
+                            has_entries = True
+                        elif isinstance(target, ast.Name) and target.id == "exits":
+                            has_exits = True
+                elif isinstance(node, ast.AnnAssign):
+                    if isinstance(node.target, ast.Name) and node.target.id == "entries":
+                        has_entries = True
+                    elif isinstance(node.target, ast.Name) and node.target.id == "exits":
+                        has_exits = True
+            
+            if not has_entries or not has_exits:
+                missing = []
+                if not has_entries:
+                    missing.append("entries")
+                if not has_exits:
+                    missing.append("exits")
+                raise ValueError(f"Strategy code must explicitly assign to: {', '.join(missing)}")
+        except Exception as e:
+            if isinstance(e, ValueError):
+                raise e
+            raise SyntaxError(f"AST parsing failed: {e}")
+
+        # Pre-execution syntax check — catch broken code before it hits exec()
+        try:
+            compile(code, '<llm_generated>', 'exec')
+        except SyntaxError as e:
+            raise SyntaxError(f"LLM generated invalid Python (line {e.lineno}): {e.msg}") from e
         return code
 
 
@@ -161,8 +316,10 @@ class CodeSanitizer:
 class AlphaAgent:
     """Converts structured intent into executable VectorBT/pandas_ta code."""
 
+    MAX_RETRIES = 3
+
     def generate_strategy_code(self, parsed_intent: dict) -> str:
-        """Generates strategy code from parsed NLP intent."""
+        """Generates strategy code from parsed NLP intent. Retries on syntax failures."""
 
         skill_context = SkillLibrary.format_skill_context()
 
@@ -184,21 +341,33 @@ class AlphaAgent:
         7. Output ONLY raw Python code. No markdown formatting, no explanations, no comments.
         8. Do NOT include any import statements for pandas or numpy; they are already imported.
         9. Only import pandas_ta if you use it.
+        10. Do NOT import any other modules (datetime, math, etc.). They are NOT available.
 
         PANDAS_TA COLUMN NAMING (CRITICAL — follow exactly):
         - All column names are LOWERCASED. Always access columns in lowercase.
         - RSI returns a Series directly: `rsi = pandas_ta.rsi(close_prices, length=14)`
         - SMA returns a Series directly: `sma = pandas_ta.sma(close_prices, length=20)`
         - EMA returns a Series directly: `ema = pandas_ta.ema(close_prices, length=12)`
-        - MACD returns a DataFrame with columns: 'macd_12_26_9', 'macdh_12_26_9', 'macds_12_26_9'
-          Example: `macd_df = pandas_ta.macd(close_prices, fast=12, slow=26, signal=9)`
-                   `macd_line = macd_df['macd_12_26_9']`
-                   `signal_line = macd_df['macds_12_26_9']`
-        - BBANDS returns a DataFrame with columns: 'bbl_20_2.0', 'bbm_20_2.0', 'bbu_20_2.0', 'bbb_20_2.0', 'bbp_20_2.0'
-          Example: `bb = pandas_ta.bbands(close_prices, length=20, std=2)`
-                   `upper = bb['bbu_20_2.0']`
-                   `lower = bb['bbl_20_2.0']`
-        - STOCH returns a DataFrame with columns: 'stochk_14_3_3', 'stochd_14_3_3'
+        - NEVER hardcode string keys for DataFrames returned by indicators like BBANDS or MACD because the suffixes change. 
+        - Access columns by position using `.iloc`. 
+          Example for BBANDS: 
+          bb = pandas_ta.bbands(close_prices, length=20, std=2)
+          lower = bb.iloc[:, 0]  # bbl is always column 0
+          middle = bb.iloc[:, 1] # bbm is always column 1
+          upper = bb.iloc[:, 2]  # bbu is always column 2
+        - Example for MACD:
+          macd_df = pandas_ta.macd(close_prices, fast=12, slow=26, signal=9)
+          macd_line = macd_df.iloc[:, 0]    # macd line is always column 0
+          histogram = macd_df.iloc[:, 1]    # histogram is always column 1
+          signal_line = macd_df.iloc[:, 2]  # signal line is always column 2
+        - STOCH returns a DataFrame with columns: 'stochk_14_3_3', 'stochd_14_3_3' (use positional access `.iloc` for these as well)
+
+        CROSSOVER LOGIC (CRITICAL):
+        - Pandas Series DO NOT have `.cross_above()` or `.cross_below()` methods. Do NOT hallucinate them.
+        - If the logic requires Line A to cross above Line B, you MUST write: 
+          `entries = (A > B) & (A.shift(1) <= B.shift(1))`
+        - If the logic requires Line A to cross below Line B, you MUST write: 
+          `exits = (A < B) & (A.shift(1) >= B.shift(1))`
 
         SIGNAL RULES (CRITICAL — follow exactly):
         - Do NOT apply .shift() to entries or exits. Shifting is handled downstream.
@@ -215,18 +384,39 @@ class AlphaAgent:
         exits = rsi > 70
         """
 
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL_PRO,
-                contents=prompt,
-            )
-            raw_code = response.text
-            safe_code = CodeSanitizer.sanitize(raw_code)
+        last_error = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                # Build messages — include error feedback on retries
+                messages = [{"role": "user", "content": prompt}]
+                if last_error and attempt > 1:
+                    messages.append({
+                        "role": "user",
+                        "content": f"Your previous code had a syntax error: {last_error}. "
+                                   f"Please fix it and output ONLY valid Python code. No markdown, no explanations."
+                    })
 
-            is_valid, msg = CodeSanitizer.validate_indicators(safe_code)
-            if not is_valid:
-                print(f"  ⚠️  {msg}")
+                raw_code = stream_chat_completion(
+                    client=client,
+                    model=GEMINI_MODEL,
+                    messages=messages,
+                    print_stream=True
+                )
+                safe_code = CodeSanitizer.sanitize(raw_code)
 
-            return safe_code
-        except Exception as e:
-            return f"# Error generating code: {e}"
+                is_valid, msg = CodeSanitizer.validate_indicators(safe_code)
+                if not is_valid:
+                    print(f"  ⚠️  {msg}")
+
+                return safe_code
+
+            except SyntaxError as e:
+                last_error = str(e)
+                print(f"\n  ⚠️  Code generation attempt {attempt}/{self.MAX_RETRIES} failed: {e}")
+                if attempt < self.MAX_RETRIES:
+                    print(f"  🔄  Retrying code generation ...")
+                    continue
+                print(f"  ❌  All {self.MAX_RETRIES} code generation attempts failed.")
+                return f"# Error: LLM generated invalid Python after {self.MAX_RETRIES} attempts. Last error: {e}"
+            except Exception as e:
+                return f"# Error generating code: {e}"

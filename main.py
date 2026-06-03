@@ -22,6 +22,14 @@ import os
 
 warnings.filterwarnings("ignore")
 
+# Configure UTF-8 encoding for standard streams to prevent UnicodeEncodeError on Windows terminals
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 # ─── Ensure project root is on path ─────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

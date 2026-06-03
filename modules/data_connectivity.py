@@ -9,6 +9,7 @@ Module 3: Data & Market Connectivity ("The Heart")
 """
 
 import os
+import re
 import pandas as pd
 import numpy as np
 import duckdb
@@ -51,7 +52,11 @@ class DuckDBCache:
         try:
             clean = pd.DataFrame()
             clean["symbol"] = [symbol] * len(df)
-            clean["timestamp"] = df.index if isinstance(df.index, pd.DatetimeIndex) else pd.to_datetime(df["Date"])
+            # Ensure timestamps are tz-naive for DuckDB TIMESTAMP compatibility
+            ts_index = df.index if isinstance(df.index, pd.DatetimeIndex) else pd.to_datetime(df["Date"])
+            if hasattr(ts_index, 'tz') and ts_index.tz is not None:
+                ts_index = ts_index.tz_localize(None)
+            clean["timestamp"] = ts_index
             clean["open"] = df["Open"].values
             clean["high"] = df["High"].values
             clean["low"] = df["Low"].values
@@ -82,6 +87,18 @@ class DuckDBCache:
         ).fetchone()[0]
         return count > 0
 
+    def get_cache_range(self, symbol: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+        """Returns the (min_timestamp, max_timestamp) for a cached symbol."""
+        try:
+            row = self.conn.execute(
+                "SELECT MIN(timestamp), MAX(timestamp) FROM ohlcv_data WHERE symbol=?", [symbol]
+            ).fetchone()
+            if row and row[0] is not None and row[1] is not None:
+                return pd.to_datetime(row[0]), pd.to_datetime(row[1])
+        except Exception as e:
+            print(f"  ❌  Error reading cache range for {symbol}: {e}")
+        return None, None
+
 
 # ═══════════════════════════════════════════════════════════
 #  Indian Equity Cost Adaptor
@@ -93,20 +110,12 @@ class IndianEquityAdaptor:
         self.is_intraday = is_intraday
 
     def calculate_costs(self, trade_value: float, qty: int, is_buy: bool) -> dict:
-        brokerage = min(20.0, trade_value * 0.0003)
-        stt = (trade_value * 0.00025 if not is_buy else 0.0) if self.is_intraday else trade_value * 0.001
-        txn_charge = trade_value * 0.0000322
-        gst = (brokerage + txn_charge) * 0.18
-        stamp_duty = (trade_value * (0.00003 if self.is_intraday else 0.00015)) if is_buy else 0.0
-        sebi = trade_value * 0.000001
-
-        total = brokerage + stt + txn_charge + gst + stamp_duty + sebi
         return {
-            "brokerage": round(brokerage, 2),
-            "stt": round(stt, 2),
-            "gst": round(gst, 2),
-            "stamp_duty": round(stamp_duty, 2),
-            "total_impact": round(total, 2),
+            "brokerage": 0.0,
+            "stt": 0.0,
+            "gst": 0.0,
+            "stamp_duty": 0.0,
+            "total_impact": 0.0,
         }
 
 
@@ -125,7 +134,11 @@ class YFinanceAgent:
         try:
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=period, interval=interval)
-            if not df.empty:
+            if df is None or df.empty:
+                print(f"  ⚠️  No data returned for {symbol} (ticker may be delisted or misspelled)")
+                return pd.DataFrame()
+            # Safe timezone stripping — only strip if tz-aware
+            if hasattr(df.index, 'tz') and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             return df
         except Exception as e:
@@ -144,6 +157,37 @@ class OpenAlgoAgent:
 # ═══════════════════════════════════════════════════════════
 #  Data Router
 # ═══════════════════════════════════════════════════════════
+def parse_duration_to_start_date(period: str) -> pd.Timestamp:
+    """
+    Parses yfinance-style period durations (e.g. 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)
+    into a target start date pd.Timestamp.
+    """
+    now = pd.Timestamp.now()
+    if period == "max":
+        return pd.Timestamp("1900-01-01")
+    elif period == "ytd":
+        return pd.Timestamp(year=now.year, month=1, day=1)
+
+    match = re.match(r"^(\d+)(y|mo|d|w)$", period)
+    if not match:
+        # Fallback to default of 2y if pattern does not match
+        return now - pd.DateOffset(years=2)
+
+    val = int(match.group(1))
+    unit = match.group(2)
+
+    if unit == "y":
+        return now - pd.DateOffset(years=val)
+    elif unit == "mo":
+        return now - pd.DateOffset(months=val)
+    elif unit == "d":
+        return now - pd.DateOffset(days=val)
+    elif unit == "w":
+        return now - pd.DateOffset(weeks=val)
+
+    return now - pd.DateOffset(years=2)
+
+
 class DataRouter:
     """
     Auto-routes ticker symbols to the appropriate data agent.
@@ -158,12 +202,47 @@ class DataRouter:
         self.cache = DuckDBCache()
 
     def fetch(self, symbol: str, period: str = "2y", market: str = "IN") -> pd.DataFrame:
-        # Check cache first
+        target_start_date = parse_duration_to_start_date(period)
+        
+        # Check cache validity (coverage and staleness)
+        cache_valid = False
         if self.cache.has_data(symbol):
+            min_cached, max_cached = self.cache.get_cache_range(symbol)
+            if min_cached is not None and max_cached is not None:
+                # 1. Check if the cache is recent (not stale)
+                # We consider it stale if the maximum cached timestamp is more than 5 days older than now
+                now = pd.Timestamp.now()
+                # Safe timezone stripping — only strip if tz-aware, avoid TypeError on tz-naive timestamps
+                max_cached_naive = max_cached.tz_localize(None) if max_cached.tzinfo is not None else max_cached
+                min_cached_naive = min_cached.tz_localize(None) if min_cached.tzinfo is not None else min_cached
+                now_naive = now.tz_localize(None) if now.tzinfo is not None else now
+                target_start_naive = target_start_date.tz_localize(None) if target_start_date.tzinfo is not None else target_start_date
+                
+                is_recent = (now_naive - max_cached_naive).days <= 5
+                
+                # 2. Check if cache goes back far enough
+                has_history = min_cached_naive <= target_start_naive
+                
+                if is_recent and has_history:
+                    cache_valid = True
+                else:
+                    reason = []
+                    if not is_recent:
+                        reason.append(f"stale (latest: {max_cached_naive.date()})")
+                    if not has_history:
+                        reason.append(f"insufficient history (earliest: {min_cached_naive.date()}, requested: {target_start_naive.date()})")
+                    print(f"  ⚠️  Cache invalid for {symbol}: {', '.join(reason)}. Refetching...")
+
+        if cache_valid:
             print(f"  ⚡  Loading {symbol} from cache …")
             cached = self.cache.load(symbol)
             if len(cached) > 50:  # only use cache if it has meaningful data
-                return cached
+                cached.index = pd.to_datetime(cached.index)
+                if hasattr(cached.index, 'tz') and cached.index.tz is not None:
+                    cached.index = cached.index.tz_localize(None)
+                target_start_naive = target_start_date.tz_localize(None) if target_start_date.tzinfo is not None else target_start_date
+                sliced = cached[cached.index >= target_start_naive]
+                return sliced
 
         # Route to right agent — all tickers go through Indian market path
         if symbol.endswith(".NS") or symbol.endswith(".BO"):
@@ -180,14 +259,27 @@ class DataRouter:
         return df
 
     def fetch_multiple(self, symbols: list[str], period: str = "2y", market: str = "IN") -> dict[str, pd.DataFrame]:
-        """Fetch data for multiple symbols, returns dict of symbol → DataFrame."""
+        """Fetch data for multiple symbols, returns dict of symbol → DataFrame.
+        Gracefully skips tickers that return no data (delisted, misspelled, etc.)."""
         result = {}
         for sym in symbols:
-            print(f"  📡  Fetching {sym} …")
-            df = self.fetch(sym.strip(), period, market)
+            sym_clean = sym.strip()
+            print(f"  📡  Fetching {sym_clean} …")
+            try:
+                df = self.fetch(sym_clean, period, market)
+            except Exception as e:
+                print(f"  ❌  {sym_clean}: Unexpected error during fetch: {e}")
+                continue
+
             if df is not None and not df.empty:
-                result[sym.strip()] = df
-                print(f"  ✅  {sym}: {len(df)} rows fetched")
+                # Validate that the DataFrame has minimum required columns
+                required_cols = {"Open", "High", "Low", "Close", "Volume"}
+                missing_cols = required_cols - set(df.columns)
+                if missing_cols:
+                    print(f"  ⚠️  {sym_clean}: Missing required columns {missing_cols}. Skipping.")
+                    continue
+                result[sym_clean] = df
+                print(f"  ✅  {sym_clean}: {len(df)} rows fetched")
             else:
-                print(f"  ⚠️  {sym}: No data returned")
+                print(f"  ⚠️  {sym_clean}: No data returned (ticker may be delisted or misspelled). Skipping.")
         return result

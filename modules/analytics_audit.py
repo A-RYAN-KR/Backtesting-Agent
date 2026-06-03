@@ -18,6 +18,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import REPORTS_DIR
 
 
+def print(*args, sep=" ", end="\n", file=None, flush=False):
+    """
+    Safe print function for Windows terminals. Gracefully encodes Unicode
+    characters by substituting unrecognized glyphs with placeholders instead of crashing.
+    """
+    target_file = file if file is not None else sys.stdout
+    text = sep.join(map(str, args)) + end
+    try:
+        target_file.write(text)
+        if flush:
+            target_file.flush()
+    except UnicodeEncodeError:
+        encoding = getattr(target_file, "encoding", None) or "ascii"
+        encoded = text.encode(encoding, errors="replace").decode(encoding)
+        target_file.write(encoded)
+        if flush:
+            target_file.flush()
+
+
 # ═══════════════════════════════════════════════════════════
 #  Performance Analyzer
 # ═══════════════════════════════════════════════════════════
@@ -27,50 +46,64 @@ class PerformanceAnalyzer:
     @staticmethod
     def compute_metrics(portfolio) -> dict:
         """Extract all key metrics from a VectorBT portfolio."""
-        returns = portfolio.returns()
+        returns = portfolio.returns().fillna(0.0)
         cumulative = (1 + returns).cumprod()
 
-        # ── DEBUG: Daily returns raw analysis ───────────────
-        print(f"\n  ┌── DEBUG: PERFORMANCE ANALYZER — RETURNS ANALYSIS ────────────")
-        print(f"  │ Returns series length: {len(returns)}")
-        print(f"  │ Zero-return days: {(returns == 0).sum()}")
-        print(f"  │ Positive days:    {(returns > 0).sum()}")
-        print(f"  │ Negative days:    {(returns < 0).sum()}")
-        print(f"  │ NaN days:         {returns.isna().sum()}")
+        # -- DEBUG: Daily returns raw analysis ---------------
+        print(f"\n  +-- DEBUG: PERFORMANCE ANALYZER - RETURNS ANALYSIS ------------")
+        print(f"  | Returns series length: {len(returns)}")
+        print(f"  | Zero-return days: {(returns == 0).sum()}")
+        print(f"  | Positive days:    {(returns > 0).sum()}")
+        print(f"  | Negative days:    {(returns < 0).sum()}")
+        print(f"  | NaN days:         {returns.isna().sum()}")
         zero_pct = (returns == 0).sum() / len(returns) * 100 if len(returns) > 0 else 0
         if zero_pct > 80:
-            print(f"  │ ⚠️  WARNING: {zero_pct:.1f}% zero-return days — strategy may be idle most of the time!")
-        print(f"  └────────────────────────────────────────────────────")
+            print(f"  | [WARNING] {zero_pct:.1f}% zero-return days - strategy may be idle most of the time!")
+        print(f"  +----------------------------------------------------")
 
         # Sharpe Ratio (annualized)
         mean_ret = returns.mean()
         std_ret = returns.std()
         sharpe = (mean_ret / std_ret * np.sqrt(252)) if std_ret > 0 else 0.0
 
-        # ── DEBUG: Sharpe computation trace ─────────────────
-        print(f"  ┌── DEBUG: SHARPE COMPUTATION ─────────────────────────────────")
-        print(f"  │ mean_ret={float(mean_ret):.8f}  std_ret={float(std_ret):.8f}")
-        print(f"  │ Sharpe = ({float(mean_ret):.8f} / {float(std_ret):.8f}) * sqrt(252) = {float(sharpe):.4f}")
+        # -- DEBUG: Sharpe computation trace -----------------
+        print(f"  +-- DEBUG: SHARPE COMPUTATION ---------------------------------")
+        print(f"  | mean_ret={float(mean_ret):.8f}  std_ret={float(std_ret):.8f}")
+        print(f"  | Sharpe = ({float(mean_ret):.8f} / {float(std_ret):.8f}) * sqrt(252) = {float(sharpe):.4f}")
         if std_ret == 0:
-            print(f"  │ ⚠️  WARNING: std_ret is ZERO — Sharpe set to 0.0 (no variance in returns)")
-        print(f"  └────────────────────────────────────────────────────")
+            print(f"  | [WARNING] std_ret is ZERO - Sharpe set to 0.0 (no variance in returns)")
+        print(f"  +----------------------------------------------------")
 
-        # Sortino Ratio
-        downside = returns[returns < 0].std()
+        # Sortino Ratio — safe std with ddof=0 fallback for tiny samples
+        neg_returns = returns[returns < 0]
+        if len(neg_returns) >= 2:
+            downside = neg_returns.std(ddof=1)
+        elif len(neg_returns) == 1:
+            downside = neg_returns.std(ddof=0)  # ddof=1 would return NaN for a single value
+        else:
+            downside = 0.0
+        # Replace NaN downside with 0.0 as a final safety net
+        if pd.isna(downside):
+            downside = 0.0
         sortino = (mean_ret / downside * np.sqrt(252)) if downside > 0 else 0.0
 
-        # Max Drawdown
+        # Max Drawdown — guard against empty/all-NaN series
         running_max = cumulative.cummax()
         drawdown = (cumulative - running_max) / running_max
-        max_dd = float(drawdown.min())
+        # Replace inf/-inf from division (e.g., running_max == 0) and fill NaN
+        drawdown = drawdown.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        max_dd = float(drawdown.min()) if len(drawdown) > 0 else 0.0
 
-        # ── DEBUG: Drawdown trace ──────────────────────────
-        print(f"  ┌── DEBUG: DRAWDOWN ──────────────────────────────────────────")
-        print(f"  │ Max Drawdown: {max_dd:.4%}")
-        max_dd_date = drawdown.idxmin()
-        print(f"  │ Max Drawdown Date: {max_dd_date}")
-        print(f"  │ Final cumulative return: {float(cumulative.iloc[-1]):.4f}")
-        print(f"  └────────────────────────────────────────────────────")
+        # -- DEBUG: Drawdown trace --------------------------
+        print(f"  +-- DEBUG: DRAWDOWN ------------------------------------------")
+        print(f"  | Max Drawdown: {max_dd:.4%}")
+        if len(drawdown) > 0 and not drawdown.isna().all():
+            max_dd_date = drawdown.idxmin()
+            print(f"  | Max Drawdown Date: {max_dd_date}")
+        else:
+            print(f"  | Max Drawdown Date: N/A (no valid drawdown data)")
+        print(f"  | Final cumulative return: {float(cumulative.iloc[-1]) if len(cumulative) > 0 else 0.0:.4f}")
+        print(f"  +----------------------------------------------------")
 
         # Calmar Ratio
         total_ret = float(portfolio.total_return())
@@ -260,13 +293,31 @@ class ReportGenerator:
 
     @staticmethod
     def generate_quantstats_report(portfolio, ticker: str, benchmark_ticker: str = "^NSEI") -> str | None:
-        """Generates a QuantStats HTML tearsheet. Returns the file path."""
+        """Generates a QuantStats HTML tearsheet. Returns the file path.
+        Gracefully handles empty/flat equity curves by bypassing QuantStats."""
         try:
             import quantstats as qs
             qs.extend_pandas()
 
             returns = portfolio.returns()
             returns.index = pd.to_datetime(returns.index)
+
+            # Early exit: if strategy never traded (all returns are zero/NaN), skip QuantStats
+            if returns.dropna().empty or returns.sum() == 0:
+                print(f"  ⚠️  QuantStats skipped for {ticker}: Zero trades executed (flat equity curve).")
+                # Generate a minimal mock report instead
+                report_path = os.path.join(REPORTS_DIR, f"{ticker}_quantstats.html")
+                with open(report_path, "w", encoding="utf-8") as f:
+                    f.write(f"""
+                    <html><head><title>{ticker} — No Trades</title></head>
+                    <body style="font-family:sans-serif; padding:40px; background:#1a1a2e; color:#e0e0e0;">
+                        <h1>⚠️ {ticker} — Zero Trades Executed</h1>
+                        <p>The strategy generated no actionable trade signals during the backtest period.</p>
+                        <p>This means the entry/exit conditions were never simultaneously met.</p>
+                        <p><b>Suggestion:</b> Relax indicator thresholds or extend the backtest duration.</p>
+                    </body></html>
+                    """)
+                return report_path
 
             report_path = os.path.join(REPORTS_DIR, f"{ticker}_quantstats.html")
             qs.reports.html(

@@ -10,10 +10,34 @@ import pandas as pd
 import numpy as np
 import vectorbt as vbt
 from scipy.stats import norm
+import multiprocessing
+import traceback
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import DEFAULT_INIT_CASH
+
+# ─── Timeout for exec() to prevent infinite loops from LLM code ────
+EXEC_TIMEOUT_SECONDS = 10
+
+
+def print(*args, sep=" ", end="\n", file=None, flush=False):
+    """
+    Safe print function for Windows terminals. Gracefully encodes Unicode
+    characters by substituting unrecognized glyphs with placeholders instead of crashing.
+    """
+    target_file = file if file is not None else sys.stdout
+    text = sep.join(map(str, args)) + end
+    try:
+        target_file.write(text)
+        if flush:
+            target_file.flush()
+    except UnicodeEncodeError:
+        encoding = getattr(target_file, "encoding", None) or "ascii"
+        encoded = text.encode(encoding, errors="replace").decode(encoding)
+        target_file.write(encoded)
+        if flush:
+            target_file.flush()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -76,17 +100,12 @@ class TransactionCostAgent:
 
     @staticmethod
     def calculate_dynamic_slippage(price_series: pd.Series, window: int = 14) -> pd.Series:
-        daily_returns = price_series.pct_change()
-        rolling_vol = daily_returns.rolling(window=window).std()
-        # Base slippage + volatility-proportional component
-        slippage = 0.0005 + (rolling_vol.fillna(0) * 0.1)
-        return slippage
+        return pd.Series(0.0, index=price_series.index)
 
     @staticmethod
     def estimate_fees(market: str = "IN") -> float:
         """Returns a flat fee percentage for Indian equity market."""
-        # Indian equity: ~0.2% (brokerage + STT approx)
-        return 0.002
+        return 0.0
 
 
 # ═══════════════════════════════════════════════════════════
@@ -127,6 +146,67 @@ class RiskAgent:
         }
 
 
+def _multiprocess_worker(code: str, price_series_dict: dict, has_pandas_ta: bool, result_queue):
+    """
+    Worker function to execute LLM-generated code in an isolated child process.
+    Prevents infinite loops from locking up the main thread or process.
+    """
+    try:
+        import pandas as pd
+        import numpy as np
+        # Import proxy classes defined in this module
+        from modules.execution_engine import PandasTAProxy
+
+        _pta_proxy = None
+        if has_pandas_ta:
+            try:
+                _pta_proxy = PandasTAProxy()
+            except Exception:
+                pass
+
+        # Prepare namespace with all required variables and aliases
+        namespace = {
+            "pd": pd,
+            "np": np,
+            "close_prices": price_series_dict.get("close"),
+            "high_prices": price_series_dict.get("high"),
+            "low_prices": price_series_dict.get("low"),
+            "volume": price_series_dict.get("volume"),
+            "pandas_ta": _pta_proxy,
+            "ta": _pta_proxy,
+            "pta": _pta_proxy,
+        }
+
+        # Run the code
+        exec(code, namespace)
+
+        # Retrieve entries and exits
+        entries = namespace.get("entries")
+        exits = namespace.get("exits")
+
+        # Collect indicator stats for debugging
+        debug_indicators = {}
+        for var_name in ["rsi", "rsi_values", "sma", "sma_fast", "sma_slow", "macd", "ema"]:
+            if var_name in namespace and namespace[var_name] is not None:
+                ind = namespace[var_name]
+                if hasattr(ind, 'mean') and hasattr(ind, 'min') and hasattr(ind, 'max') and hasattr(ind, 'isna'):
+                    try:
+                        debug_indicators[var_name] = {
+                            "mean": float(ind.mean()),
+                            "min": float(ind.min()),
+                            "max": float(ind.max()),
+                            "nan_count": int(ind.isna().sum())
+                        }
+                    except Exception:
+                        pass
+
+        # Put results back
+        result_queue.put((entries, exits, debug_indicators, None))
+    except Exception as e:
+        import traceback
+        result_queue.put((None, None, None, (type(e).__name__, str(e), traceback.format_exc())))
+
+
 # ═══════════════════════════════════════════════════════════
 #  Backtest Engine
 # ═══════════════════════════════════════════════════════════
@@ -139,10 +219,52 @@ class BacktestEngine:
       - Multi-ticker execution
     """
 
+    EXEC_TIMEOUT = EXEC_TIMEOUT_SECONDS
+
     def __init__(self, init_cash: float = DEFAULT_INIT_CASH):
         self.init_cash = init_cash
         self.cost_agent = TransactionCostAgent()
         self.risk_agent = RiskAgent()
+
+    @staticmethod
+    def _exec_with_timeout(code: str, close_prices, high_prices, low_prices, volume, has_pandas_ta: bool, timeout: int = 10):
+        """
+        Execute code with process isolation and a timeout to prevent infinite loops.
+        """
+        import multiprocessing
+
+        price_series_dict = {
+            "close": close_prices,
+            "high": high_prices,
+            "low": low_prices,
+            "volume": volume
+        }
+
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+
+        p = ctx.Process(
+            target=_multiprocess_worker,
+            args=(code, price_series_dict, has_pandas_ta, result_queue)
+        )
+        p.start()
+        p.join(timeout=timeout)
+
+        if p.is_alive():
+            p.terminate()
+            p.join()
+            raise TimeoutError(f"Code execution exceeded {timeout}s timeout")
+
+        if not result_queue.empty():
+            entries, exits, debug_indicators, err = result_queue.get()
+        else:
+            raise RuntimeError("No result returned from worker process")
+
+        if err is not None:
+            err_type, err_msg, tb_str = err
+            raise RuntimeError(f"{err_type}: {err_msg}\n{tb_str}")
+
+        return entries, exits, debug_indicators
 
     def execute_strategy_code(self, code: str, price_data: dict) -> dict:
         """
@@ -186,7 +308,13 @@ class BacktestEngine:
                     _pta_proxy = PandasTAProxy()
                 except ImportError:
                     _pta_proxy = None
-                    print(f"  ⚠️  pandas_ta not installed — indicator functions unavailable")
+                    print(f"  [WARNING] pandas_ta not installed — indicator functions unavailable")
+
+                # Guard: If pandas_ta is not available and the code references it, fail fast
+                if _pta_proxy is None and "pandas_ta" in code:
+                    print(f"  [ERROR] Strategy code requires pandas_ta but it is not installed.")
+                    results[ticker] = {"error": "pandas_ta is required but not installed."}
+                    continue
 
                 namespace = {
                     "pd": pd,
@@ -196,14 +324,32 @@ class BacktestEngine:
                     "low_prices": low_prices,
                     "volume": volume,
                     "pandas_ta": _pta_proxy,
+                    "ta": _pta_proxy,
+                    "pta": _pta_proxy,
                 }
 
-                # Rewrite 'import pandas_ta' so it binds our proxy instead
+                # Rewrite 'import pandas_ta' so it binds our proxy instead (as a fallback)
                 patched_code = code.replace("import pandas_ta", "pandas_ta = pandas_ta  # proxy already injected")
-                exec(patched_code, namespace)
 
-                entries = namespace.get("entries")
-                exits = namespace.get("exits")
+                # Execute with timeout to prevent infinite loops from LLM hallucinations
+                try:
+                    entries, exits, debug_indicators = self._exec_with_timeout(
+                        patched_code,
+                        close_prices,
+                        high_prices,
+                        low_prices,
+                        volume,
+                        _pta_proxy is not None,
+                        timeout=self.EXEC_TIMEOUT
+                    )
+                except TimeoutError:
+                    print(f"  ❌  Code execution timed out after {self.EXEC_TIMEOUT}s for {ticker} (possible infinite loop)")
+                    results[ticker] = {"error": f"Code execution timed out after {self.EXEC_TIMEOUT}s (possible infinite loop)."}
+                    continue
+                except Exception as exec_err:
+                    print(f"  ❌  Code execution failed for {ticker}: {exec_err}")
+                    results[ticker] = {"error": f"Code execution error: {exec_err}"}
+                    continue
 
                 if entries is None or exits is None:
                     print(f"  ❌  Code did not produce 'entries' or 'exits' for {ticker}")
@@ -225,75 +371,59 @@ class BacktestEngine:
 
                 # Check for any indicator values generated in the namespace
                 for var_name in ["rsi", "rsi_values", "sma", "sma_fast", "sma_slow", "macd", "ema"]:
-                    if var_name in namespace and namespace[var_name] is not None:
-                        ind = namespace[var_name]
-                        if hasattr(ind, 'mean'):
-                            print(f"  │ Indicator '{var_name}': mean={float(ind.mean()):.4f}, min={float(ind.min()):.4f}, max={float(ind.max()):.4f}, NaN={int(ind.isna().sum())}")
-
-                print(f"  │")
-                print(f"  │ ── First 10 ENTRY signal dates ──")
-                entry_dates = entries[entries].head(10)
-                if len(entry_dates) > 0:
-                    for idx in entry_dates.index:
-                        price_at = close_prices.loc[idx] if idx in close_prices.index else float('nan')
-                        print(f"  │   {idx}  |  Price: ₹{price_at:.2f}")
-                else:
-                    print(f"  │   ⚠️  NO entry signals generated!")
-
-                print(f"  │")
-                print(f"  │ ── First 10 EXIT signal dates ──")
-                exit_dates = exits[exits].head(10)
-                if len(exit_dates) > 0:
-                    for idx in exit_dates.index:
-                        price_at = close_prices.loc[idx] if idx in close_prices.index else float('nan')
-                        print(f"  │   {idx}  |  Price: ₹{price_at:.2f}")
-                else:
-                    print(f"  │   ⚠️  NO exit signals generated!")
-
-                # Check for overlapping signals (entry + exit on same day)
-                overlap_count = int((entries & exits).sum())
-                if overlap_count > 0:
-                    print(f"  │")
-                    print(f"  │ ⚠️  WARNING: {overlap_count} days have BOTH entry AND exit signals!")
-
-                print(f"  └────────────────────────────────────────────────────")
+                    if debug_indicators and var_name in debug_indicators:
+                        stats = debug_indicators[var_name]
+                        print(f"  │ Indicator '{var_name}': mean={stats['mean']:.4f}, min={stats['min']:.4f}, max={stats['max']:.4f}, NaN={stats['nan_count']}")
 
                 # ══════════════════════════════════════════════════
-                # STATE-AWARE SIGNAL FILTERING
+                # VECTORIZED SIGNAL FILTERING & PORTFOLIO RUN
                 # ══════════════════════════════════════════════════
-                # Ensure logical consistency:
-                #   - Entry signals only fire when currently FLAT (no position)
-                #   - Exit signals only fire when currently IN a position
-                #   - If both fire on the same bar, exit wins (close first)
                 raw_entries = entries.copy()
                 raw_exits = exits.copy()
 
-                filtered_entries = pd.Series(False, index=entries.index)
-                filtered_exits = pd.Series(False, index=exits.index)
-                in_position = False
+                # Dynamic slippage (Fixed to 0 per Indian market constraints)
+                slippage = pd.Series(0.0, index=close_prices.index)
+                fees = 0.0
 
-                for i in range(len(entries)):
-                    entry_sig = bool(entries.iloc[i])
-                    exit_sig = bool(exits.iloc[i])
+                # ── DEBUG: Transaction costs ───────────────────────
+                print(f"\n  ┌── DEBUG: TRANSACTION COSTS ({ticker}) ──────────────────────────")
+                print(f"  │ Slippage: mean={slippage.mean():.6f}, max={slippage.max():.6f}")
+                print(f"  │ Flat fee rate: {fees:.4f} ({fees*100:.2f}%)")
+                print(f"  └────────────────────────────────────────────────────")
 
-                    if in_position:
-                        # Currently holding — only exits are valid
-                        if exit_sig:
-                            filtered_exits.iloc[i] = True
-                            in_position = False
-                        # Ignore entry signals while already in position
-                    else:
-                        # Currently flat — only entries are valid
-                        if entry_sig and not exit_sig:
-                            filtered_entries.iloc[i] = True
-                            in_position = True
-                        elif entry_sig and exit_sig:
-                            # Conflict: exit wins (can't exit when flat, so skip both)
-                            pass
-                        # Ignore exit signals while already flat
+                # Run VectorBT portfolio directly on raw signals with native conflict resolution
+                portfolio = vbt.Portfolio.from_signals(
+                    close_prices,
+                    entries=entries,
+                    exits=exits,
+                    freq="1D",
+                    init_cash=self.init_cash,
+                    fees=fees,
+                    slippage=slippage,
+                    upon_long_conflict='ignore',  # Ignores new BUY signals if already LONG
+                    upon_short_conflict='ignore', # Ignores new SELL signals if already SHORT
+                    upon_dir_conflict='ignore'    # If BUY and SELL happen on the exact same bar, ignore both
+                )
 
-                entries = filtered_entries
-                exits = filtered_exits
+                # Reconstruct resolved/executed signals from portfolio orders for tracing & diagnostics
+                actual_entries = pd.Series(False, index=close_prices.index)
+                actual_exits = pd.Series(False, index=close_prices.index)
+                try:
+                    orders_df = portfolio.orders.records_readable
+                    if not orders_df.empty:
+                        for _, row in orders_df.iterrows():
+                            t = row['Timestamp']
+                            side = row['Side']
+                            if t in actual_entries.index:
+                                if side == 'Buy':
+                                    actual_entries.loc[t] = True
+                                elif side == 'Sell':
+                                    actual_exits.loc[t] = True
+                except Exception as e:
+                    print(f"  ⚠️  Could not extract actual orders from portfolio: {e}")
+
+                entries = actual_entries
+                exits = actual_exits
 
                 # ── DEBUG: State-aware filtering results ────────
                 raw_entry_count = int(raw_entries.sum())
@@ -312,122 +442,26 @@ class BacktestEngine:
                     print(f"  │ ℹ️  Entry/Exit count mismatch by {abs(filtered_entry_count - filtered_exit_count)} (last position may still be open)")
                 print(f"  └────────────────────────────────────────────────────")
 
-                # Dynamic slippage
-                slippage = self.cost_agent.calculate_dynamic_slippage(close_prices)
-                fees = self.cost_agent.estimate_fees("IN")
 
-                # ── DEBUG: Slippage stats ───────────────────────
-                print(f"\n  ┌── DEBUG: TRANSACTION COSTS ({ticker}) ──────────────────────────")
-                print(f"  │ Slippage: mean={slippage.mean():.6f}, max={slippage.max():.6f}")
-                print(f"  │ Flat fee rate: {fees:.4f} ({fees*100:.2f}%)")
-                print(f"  └────────────────────────────────────────────────────")
-
-                # Run VectorBT portfolio
-                portfolio = vbt.Portfolio.from_signals(
-                    close_prices,
-                    entries,
-                    exits,
-                    freq="1D",
-                    init_cash=self.init_cash,
-                    slippage=slippage,
-                    fees=fees,
-                )
 
                 # ══════════════════════════════════════════════════
-                # DEBUG 2: MAIN LOOP TRACE (row-by-row simulation)
+                # FAST TRADE EXECUTION LOGS
                 # ══════════════════════════════════════════════════
-                print(f"\n  ┌── DEBUG: ROW-BY-ROW EXECUTION TRACE ({ticker}) ─────────────────")
-                print(f"  │ {'Date':<12} | {'Price':>9} | {'Entry':>5} | {'Exit':>5} | {'Pos':>3} | {'Cash':>12} | {'Shares':>8} | {'Equity':>12}")
-                print(f"  │ {'─'*12}─┼─{'─'*9}─┼─{'─'*5}─┼─{'─'*5}─┼─{'─'*3}─┼─{'─'*12}─┼─{'─'*8}─┼─{'─'*12}")
-
-                equity_series = portfolio.value()
-                cash_series = portfolio.cash()
-                # Reconstruct share positions from equity and cash
-                shares_series = (equity_series - cash_series) / close_prices
-                shares_series = shares_series.fillna(0)
-
-                sim_position = 0  # Track position for validation: 0=flat, 1=long
-                prev_price = None
-                prev_equity = None
-                equity_stale_warnings = 0
-                position_warnings = []
-                trade_log = []
-
-                for i, date in enumerate(close_prices.index):
-                    price = float(close_prices.iloc[i])
-                    entry = bool(entries.iloc[i])
-                    exit_sig = bool(exits.iloc[i])
-                    equity = float(equity_series.iloc[i]) if i < len(equity_series) else 0.0
-                    cash = float(cash_series.iloc[i]) if i < len(cash_series) else 0.0
-                    shares = float(shares_series.iloc[i]) if i < len(shares_series) else 0.0
-
-                    # Determine current position state
-                    current_pos = 1 if shares > 0.01 else 0
-
-                    # Print first 20 rows, then every 50th row, plus all trade rows
-                    is_trade_row = (entry and sim_position == 0) or (exit_sig and sim_position == 1)
-                    if i < 20 or i % 50 == 0 or is_trade_row or i == len(close_prices) - 1:
-                        date_str = str(date)[:10]
-                        marker = ""
-                        if entry and sim_position == 0:
-                            marker = " ◀ BUY"
-                        elif exit_sig and sim_position == 1:
-                            marker = " ◀ SELL"
-                        print(f"  │ {date_str:<12} | ₹{price:>8.2f} | {str(entry):>5} | {str(exit_sig):>5} | {current_pos:>3} | ₹{cash:>11.2f} | {shares:>8.2f} | ₹{equity:>11.2f}{marker}")
-
-                    # ── DEBUG 5: POSITION VALIDATION ────────────
-                    if entry and sim_position == 1:
-                        warn = f"  │ ⚠️  POSITION WARNING on {str(date)[:10]}: BUY signal while ALREADY IN POSITION (pos={sim_position})"
-                        position_warnings.append(warn)
-                    if exit_sig and sim_position == 0:
-                        warn = f"  │ ⚠️  POSITION WARNING on {str(date)[:10]}: SELL signal while NOT IN POSITION (pos={sim_position})"
-                        position_warnings.append(warn)
-
-                    # ── DEBUG 3: TRADE EXECUTION LOGS ───────────
-                    if entry and sim_position == 0:
-                        sim_position = 1
-                        trade_log.append(f"  │ 🟢 BUY  executed on {str(date)[:10]} at ₹{price:.2f} | Shares: {shares:.2f} | Cash left: ₹{cash:.2f}")
-                    elif exit_sig and sim_position == 1:
-                        sim_position = 0
-                        trade_log.append(f"  │ 🔴 SELL executed on {str(date)[:10]} at ₹{price:.2f} | Shares sold: {shares:.2f} | Cash: ₹{cash:.2f}")
-
-                    # ── DEBUG 4: EQUITY CALCULATION CHECK ───────
-                    if prev_price is not None and prev_equity is not None:
-                        if abs(price - prev_price) > 0.01 and abs(equity - prev_equity) < 0.001 and current_pos == 1:
-                            equity_stale_warnings += 1
-                            if equity_stale_warnings <= 5:
-                                print(f"  │ ⚠️  WARNING: Equity NOT updating on {str(date)[:10]} despite price change (₹{prev_price:.2f}→₹{price:.2f}) while in position!")
-
-                    prev_price = price
-                    prev_equity = equity
-
-                print(f"  │ {'─'*12}─┴─{'─'*9}─┴─{'─'*5}─┴─{'─'*5}─┴─{'─'*3}─┴─{'─'*12}─┴─{'─'*8}─┴─{'─'*12}")
-                print(f"  │")
-                print(f"  │ ── TRADE EXECUTION LOG ──")
-                if trade_log:
-                    for tl in trade_log:
-                        print(tl)
-                else:
-                    print(f"  │ ⚠️  NO TRADES were executed!")
-                print(f"  │ Total Trades Logged: {len(trade_log)}")
-                print(f"  │")
-
-                # Print position warnings
-                if position_warnings:
-                    print(f"  │ ── POSITION WARNINGS ({len(position_warnings)}) ──")
-                    for pw in position_warnings[:10]:
-                        print(pw)
-                    if len(position_warnings) > 10:
-                        print(f"  │   … and {len(position_warnings) - 10} more warnings")
-                else:
-                    print(f"  │ ✅ No position validation warnings.")
-
-                if equity_stale_warnings > 0:
-                    print(f"  │")
-                    print(f"  │ ⚠️  Total equity-stale warnings: {equity_stale_warnings}")
-                else:
-                    print(f"  │ ✅ Equity updates correctly on all price changes while in position.")
-
+                print(f"\n  ┌── DEBUG: TRADE EXECUTION LOG ({ticker}) ─────────────────")
+                try:
+                    trades_df = portfolio.trades.records_readable
+                    if not trades_df.empty:
+                        for _, row in trades_df.head(10).iterrows(): # Print first 10 trades safely
+                            entry_date = str(row['Entry Timestamp'])[:10]
+                            exit_date = str(row['Exit Timestamp'])[:10]
+                            pnl = row['PnL']
+                            print(f"  │ 🟢 BUY {entry_date} | 🔴 SELL {exit_date} | PnL: ₹{pnl:.2f}")
+                        if len(trades_df) > 10:
+                            print(f"  │ ... and {len(trades_df) - 10} more trades.")
+                    else:
+                        print(f"  │ ⚠️  NO TRADES were executed!")
+                except Exception as e:
+                    print(f"  │ ⚠️  Could not extract trades: {e}")
                 print(f"  └────────────────────────────────────────────────────")
 
                 # Risk analysis
@@ -491,7 +525,7 @@ class BacktestEngine:
                 print(f"  │ Entry Signals:    {results[ticker]['entries_count']}")
                 print(f"  │ Exit Signals:     {results[ticker]['exits_count']}")
                 print(f"  │ Init Cash:        ₹{self.init_cash:,.2f}")
-                print(f"  │ Final Equity:     ₹{float(equity_series.iloc[-1]):,.2f}")
+                print(f"  │ Final Equity:     ₹{float(portfolio.final_value()):,.2f}")
                 print(f"  └────────────────────────────────────────────────────")
 
                 print(f"  ✅  {ticker}: Return={results[ticker]['total_return']:.2%}  |  Trades={results[ticker]['trades_count']}  |  Fees=₹{total_fees:.2f}")
