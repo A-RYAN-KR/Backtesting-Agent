@@ -12,6 +12,7 @@ import vectorbt as vbt
 from scipy.stats import norm
 import multiprocessing
 import traceback
+import queue
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -154,8 +155,6 @@ def _multiprocess_worker(code: str, price_series_dict: dict, has_pandas_ta: bool
     try:
         import pandas as pd
         import numpy as np
-        # Import proxy classes defined in this module
-        from modules.execution_engine import PandasTAProxy
 
         _pta_proxy = None
         if has_pandas_ta:
@@ -169,6 +168,7 @@ def _multiprocess_worker(code: str, price_series_dict: dict, has_pandas_ta: bool
             "pd": pd,
             "np": np,
             "close_prices": price_series_dict.get("close"),
+            "open_prices": price_series_dict.get("open"),
             "high_prices": price_series_dict.get("high"),
             "low_prices": price_series_dict.get("low"),
             "volume": price_series_dict.get("volume"),
@@ -227,14 +227,25 @@ class BacktestEngine:
         self.risk_agent = RiskAgent()
 
     @staticmethod
-    def _exec_with_timeout(code: str, close_prices, high_prices, low_prices, volume, has_pandas_ta: bool, timeout: int = 10):
+    def _exec_with_timeout(code: str, close_prices, open_prices, high_prices, low_prices, volume, has_pandas_ta: bool, timeout: int = 10):
         """
         Execute code with process isolation and a timeout to prevent infinite loops.
         """
         import multiprocessing
+        import os
+        import sys
+
+        # FIX: Force the Windows child process to recognize the project root directory context
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        if "PYTHONPATH" in os.environ:
+            if project_root not in os.environ["PYTHONPATH"].split(os.pathsep):
+                os.environ["PYTHONPATH"] = project_root + os.pathsep + os.environ["PYTHONPATH"]
+        else:
+            os.environ["PYTHONPATH"] = project_root
 
         price_series_dict = {
             "close": close_prices,
+            "open": open_prices,
             "high": high_prices,
             "low": low_prices,
             "volume": volume
@@ -248,17 +259,18 @@ class BacktestEngine:
             args=(code, price_series_dict, has_pandas_ta, result_queue)
         )
         p.start()
-        p.join(timeout=timeout)
 
-        if p.is_alive():
+        try:
+            # Read from the queue FIRST to clear the buffer
+            entries, exits, debug_indicators, err = result_queue.get(timeout=timeout)
+        except queue.Empty:
+            # If the queue is empty after the timeout, it's a true infinite loop
             p.terminate()
             p.join()
             raise TimeoutError(f"Code execution exceeded {timeout}s timeout")
 
-        if not result_queue.empty():
-            entries, exits, debug_indicators, err = result_queue.get()
-        else:
-            raise RuntimeError("No result returned from worker process")
+        # Now it is safe to cleanly join the process
+        p.join(timeout=1)
 
         if err is not None:
             err_type, err_msg, tb_str = err
@@ -285,12 +297,14 @@ class BacktestEngine:
             try:
                 # Prepare data variables the generated code expects
                 close_prices = df["Close"] if "Close" in df.columns else df["close"]
+                open_prices = df["Open"] if "Open" in df.columns else df.get("open", close_prices)
                 high_prices = df["High"] if "High" in df.columns else df.get("high", close_prices)
                 low_prices = df["Low"] if "Low" in df.columns else df.get("low", close_prices)
                 volume = df["Volume"] if "Volume" in df.columns else df.get("volume", pd.Series(0, index=df.index))
 
                 # Ensure numeric types
                 close_prices = pd.to_numeric(close_prices, errors="coerce").dropna()
+                open_prices = pd.to_numeric(open_prices, errors="coerce").reindex(close_prices.index).fillna(close_prices)
                 high_prices = pd.to_numeric(high_prices, errors="coerce").reindex(close_prices.index).fillna(close_prices)
                 low_prices = pd.to_numeric(low_prices, errors="coerce").reindex(close_prices.index).fillna(close_prices)
 
@@ -320,6 +334,7 @@ class BacktestEngine:
                     "pd": pd,
                     "np": np,
                     "close_prices": close_prices,
+                    "open_prices": open_prices,
                     "high_prices": high_prices,
                     "low_prices": low_prices,
                     "volume": volume,
@@ -336,6 +351,7 @@ class BacktestEngine:
                     entries, exits, debug_indicators = self._exec_with_timeout(
                         patched_code,
                         close_prices,
+                        open_prices,
                         high_prices,
                         low_prices,
                         volume,
@@ -359,6 +375,19 @@ class BacktestEngine:
                 # Align indices
                 entries = entries.reindex(close_prices.index).fillna(False).astype(bool)
                 exits = exits.reindex(close_prices.index).fillna(False).astype(bool)
+
+                # Trim warmup padding if present in metadata
+                if "target_start_date" in df.attrs:
+                    target_start = df.attrs["target_start_date"]
+                    target_start = target_start.tz_localize(None) if target_start.tzinfo is not None else target_start
+                    
+                    close_prices = close_prices[close_prices.index >= target_start]
+                    open_prices = open_prices[open_prices.index >= target_start]
+                    high_prices = high_prices[high_prices.index >= target_start]
+                    low_prices = low_prices[low_prices.index >= target_start]
+                    volume = volume[volume.index >= target_start]
+                    entries = entries[entries.index >= target_start]
+                    exits = exits[exits.index >= target_start]
 
                 # ══════════════════════════════════════════════════
                 # DEBUG 1: SIGNAL GENERATION

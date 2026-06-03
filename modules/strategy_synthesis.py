@@ -75,51 +75,30 @@ class SkillLibrary:
 #  Code Sanitizer
 # ═══════════════════════════════════════════════════════════
 class EntryExitShifter(ast.NodeTransformer):
-    """AST transformer to shift entries by 1 and fillna(False) on entries/exits."""
+    """
+    Appends lookahead bias guards and fillna attributes to BOTH entry 
+    and exit conditions uniformly to prevent same-bar directional deadlocks.
+    """
 
     def visit_Assign(self, node):
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
+            # FIX: Apply lookahead alignment shift to both vectors
             if name in ('entries', 'exits'):
-                class CallChecker(ast.NodeVisitor):
-                    def __init__(self):
-                        self.has_shift = False
-                        self.has_fillna = False
-                    def visit_Call(self, call_node):
-                        if isinstance(call_node.func, ast.Attribute):
-                            if call_node.func.attr == 'shift':
-                                self.has_shift = True
-                            elif call_node.func.attr == 'fillna':
-                                self.has_fillna = True
-                        self.generic_visit(call_node)
-
-                checker = CallChecker()
-                checker.visit(node.value)
-                current_value = node.value
-
-                if name == 'entries':
-                    if not checker.has_shift:
-                        shift_call = ast.Call(
-                            func=ast.Attribute(value=current_value, attr='shift', ctx=ast.Load()),
+                new_value = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Call(
+                            func=ast.Attribute(value=node.value, attr='shift', ctx=ast.Load()),
                             args=[ast.Constant(value=1)],
                             keywords=[]
-                        )
-                        current_value = shift_call
-                        
-                        fillna_call = ast.Call(
-                            func=ast.Attribute(value=current_value, attr='fillna', ctx=ast.Load()),
-                            args=[ast.Constant(value=False)],
-                            keywords=[]
-                        )
-                        node.value = fillna_call
-                elif name == 'exits':
-                    if not checker.has_fillna:
-                        fillna_call = ast.Call(
-                            func=ast.Attribute(value=current_value, attr='fillna', ctx=ast.Load()),
-                            args=[ast.Constant(value=False)],
-                            keywords=[]
-                        )
-                        node.value = fillna_call
+                        ),
+                        attr='fillna',
+                        ctx=ast.Load()
+                    ),
+                    args=[ast.Constant(value=False)],
+                    keywords=[]
+                )
+                node.value = new_value
         return node
 
 
@@ -128,11 +107,8 @@ class CodeSanitizer:
     Ensures generated code is safe and free of lookahead bias.
 
     Shift policy:
-      • ENTRY signals  → shift(1) applied to prevent buying on the
-        same bar the condition fires (lookahead-bias guard).
-      • EXIT signals   → NOT shifted.  An exit should execute as soon
-        as the condition is true so that stop-losses and take-profits
-        are not artificially delayed by one bar.
+      • ENTRY & EXIT signals → shift(1) applied to prevent same-bar
+        directional deadlocks and ensure consistent execution boundaries.
     """
 
     # Allowlisted import modules — everything else is blocked
@@ -141,8 +117,7 @@ class CodeSanitizer:
     @staticmethod
     def enforce_entry_shift(code_string: str) -> str:
         """
-        Applies .shift(1) ONLY to entry signals to prevent lookahead bias.
-        Exit signals are left untouched so positions can close immediately.
+        Applies .shift(1).fillna(False) to both entry and exit signals.
         Uses AST parsing to safely traverse and modify entry and exit signals.
         """
         try:
@@ -154,22 +129,15 @@ class CodeSanitizer:
         except Exception as e:
             print(f"  [WARNING] AST parsing failed during entry shift enforcement: {e}. Falling back to regex.")
             # Simple fallback using regular expressions
-            def shift_entries(match):
+            def shift_signals(match):
                 prefix = match.group(1)
                 expression = match.group(2).strip()
                 if ".shift(" in expression:
                     return f"{prefix} {expression}"
                 return f"{prefix} ({expression}).shift(1).fillna(False)"
 
-            def clean_exits(match):
-                prefix = match.group(1)
-                expression = match.group(2).strip()
-                if ".fillna(" in expression:
-                    return f"{prefix} {expression}"
-                return f"{prefix} ({expression}).fillna(False)"
-
-            code = re.sub(r'(entries\s*=\s*)([^#\n]+)', shift_entries, code_string)
-            code = re.sub(r'(exits\s*=\s*)([^#\n]+)', clean_exits, code)
+            code = re.sub(r'(entries\s*=\s*)([^#\n]+)', shift_signals, code_string)
+            code = re.sub(r'(exits\s*=\s*)([^#\n]+)', shift_signals, code)
             return code
 
     @staticmethod
@@ -342,6 +310,9 @@ class AlphaAgent:
         8. Do NOT include any import statements for pandas or numpy; they are already imported.
         9. Only import pandas_ta if you use it.
         10. Do NOT import any other modules (datetime, math, etc.). They are NOT available.
+        11. RISK TARGETS RULE: Never write mathematical expressions checking stop_loss or take_profit conditions.
+        If the strategy mentions risk targets or stop losses, do NOT append them to the 'exits' boolean series.
+        Keep 'exits' bound purely to technical indicator conditions.
 
         PANDAS_TA COLUMN NAMING (CRITICAL — follow exactly):
         - All column names are LOWERCASED. Always access columns in lowercase.

@@ -77,6 +77,14 @@ class DuckDBCache:
             ).df()
             if not df.empty:
                 df.set_index("timestamp", inplace=True)
+                # Map back to Title Case to satisfy downstream validation
+                df.rename(columns={
+                    "open": "Open",
+                    "high": "High",
+                    "low": "Low",
+                    "close": "Close",
+                    "volume": "Volume"
+                }, inplace=True)
             return df
         except Exception:
             return pd.DataFrame()
@@ -130,10 +138,13 @@ def get_market_adaptor(is_intraday: bool = False):
 class YFinanceAgent:
     """Fetches data from Yahoo Finance for Indian equities."""
 
-    def fetch(self, symbol: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
+    def fetch(self, symbol: str, period: str = "2y", interval: str = "1d", start=None) -> pd.DataFrame:
         try:
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period, interval=interval)
+            if start is not None:
+                df = ticker.history(start=start, interval=interval)
+            else:
+                df = ticker.history(period=period, interval=interval)
             if df is None or df.empty:
                 print(f"  ⚠️  No data returned for {symbol} (ticker may be delisted or misspelled)")
                 return pd.DataFrame()
@@ -149,9 +160,9 @@ class YFinanceAgent:
 class OpenAlgoAgent:
     """Indian market data via yfinance .NS suffix."""
 
-    def fetch(self, symbol: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
+    def fetch(self, symbol: str, period: str = "2y", interval: str = "1d", start=None) -> pd.DataFrame:
         yf_symbol = f"{symbol}.NS" if not symbol.endswith((".NS", ".BO")) else symbol
-        return YFinanceAgent().fetch(yf_symbol, period, interval)
+        return YFinanceAgent().fetch(yf_symbol, period, interval, start=start)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -203,6 +214,7 @@ class DataRouter:
 
     def fetch(self, symbol: str, period: str = "2y", market: str = "IN") -> pd.DataFrame:
         target_start_date = parse_duration_to_start_date(period)
+        padded_start_date = target_start_date - pd.DateOffset(days=100)
         
         # Check cache validity (coverage and staleness)
         cache_valid = False
@@ -216,12 +228,12 @@ class DataRouter:
                 max_cached_naive = max_cached.tz_localize(None) if max_cached.tzinfo is not None else max_cached
                 min_cached_naive = min_cached.tz_localize(None) if min_cached.tzinfo is not None else min_cached
                 now_naive = now.tz_localize(None) if now.tzinfo is not None else now
-                target_start_naive = target_start_date.tz_localize(None) if target_start_date.tzinfo is not None else target_start_date
+                padded_start_naive = padded_start_date.tz_localize(None) if padded_start_date.tzinfo is not None else padded_start_date
                 
                 is_recent = (now_naive - max_cached_naive).days <= 5
                 
                 # 2. Check if cache goes back far enough
-                has_history = min_cached_naive <= target_start_naive
+                has_history = min_cached_naive <= padded_start_naive
                 
                 if is_recent and has_history:
                     cache_valid = True
@@ -230,7 +242,7 @@ class DataRouter:
                     if not is_recent:
                         reason.append(f"stale (latest: {max_cached_naive.date()})")
                     if not has_history:
-                        reason.append(f"insufficient history (earliest: {min_cached_naive.date()}, requested: {target_start_naive.date()})")
+                        reason.append(f"insufficient history (earliest: {min_cached_naive.date()}, requested with padding: {padded_start_naive.date()})")
                     print(f"  ⚠️  Cache invalid for {symbol}: {', '.join(reason)}. Refetching...")
 
         if cache_valid:
@@ -240,21 +252,25 @@ class DataRouter:
                 cached.index = pd.to_datetime(cached.index)
                 if hasattr(cached.index, 'tz') and cached.index.tz is not None:
                     cached.index = cached.index.tz_localize(None)
+                padded_start_naive = padded_start_date.tz_localize(None) if padded_start_date.tzinfo is not None else padded_start_date
                 target_start_naive = target_start_date.tz_localize(None) if target_start_date.tzinfo is not None else target_start_date
-                sliced = cached[cached.index >= target_start_naive]
+                sliced = cached[cached.index >= padded_start_naive]
+                sliced.attrs["target_start_date"] = target_start_naive
                 return sliced
 
         # Route to right agent — all tickers go through Indian market path
         if symbol.endswith(".NS") or symbol.endswith(".BO"):
             source = "yfinance"
-            df = self.yf_agent.fetch(symbol, period)
+            df = self.yf_agent.fetch(symbol, start=padded_start_date)
         else:
             source = "openalgo"
-            df = self.openalgo_agent.fetch(symbol, period)
+            df = self.openalgo_agent.fetch(symbol, start=padded_start_date)
 
         # Cache it
         if df is not None and not df.empty:
             self.cache.save(df, symbol, source)
+            target_start_naive = target_start_date.tz_localize(None) if target_start_date.tzinfo is not None else target_start_date
+            df.attrs["target_start_date"] = target_start_naive
 
         return df
 
