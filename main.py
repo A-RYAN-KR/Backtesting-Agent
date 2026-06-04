@@ -103,7 +103,7 @@ class BacktestingPipeline:
 
         # ── Step 1: NLP & Orchestration ─────────────────────
         print("─" * 50)
-        print("  STEP 1/5: NLP & Orchestration (The Brain)")
+        print("  STEP 1/5: NLP & Orchestration")
         print("─" * 50)
 
         self.bus.update_status("QueryInterpreter", "Working")
@@ -129,7 +129,7 @@ class BacktestingPipeline:
 
         # ── Step 2: Strategy Synthesis ──────────────────────
         print(f"\n{'─' * 50}")
-        print("  STEP 2/5: Strategy Synthesis (The Translator)")
+        print("  STEP 2/5: Strategy Synthesis")
         print("─" * 50)
 
         self.bus.update_status("AlphaAgent", "Working")
@@ -147,7 +147,7 @@ class BacktestingPipeline:
 
         # ── Step 3: Data & Market Connectivity ──────────────
         print("─" * 50)
-        print("  STEP 3/5: Data & Market Connectivity (The Heart)")
+        print("  STEP 3/5: Data & Market Connectivity")
         print("─" * 50)
 
         self.bus.update_status("DataRouter", "Working")
@@ -168,7 +168,7 @@ class BacktestingPipeline:
 
         # ── Step 4: Execution Engine ────────────────────────
         print(f"\n{'─' * 50}")
-        print("  STEP 4/5: Execution Engine (The Engine)")
+        print("  STEP 4/5: Execution Engine")
         print("─" * 50)
 
         self.bus.update_status("BacktestEngine", "Working")
@@ -181,7 +181,7 @@ class BacktestingPipeline:
 
         # ── Step 5: Analytics & Audit ───────────────────────
         print(f"\n{'─' * 50}")
-        print("  STEP 5/5: Analytics & Audit (The Eyes)")
+        print("  STEP 5/5: Analytics & Audit")
         print("─" * 50)
 
         self.bus.update_status("ReportGenerator", "Working")
