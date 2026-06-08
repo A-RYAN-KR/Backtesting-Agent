@@ -87,24 +87,26 @@ flowchart TD
   - `enforce_import_allowlist(code_string: str) -> str`: Strips any `import` or `from ... import ...` statements unless they match the whitelist (`pandas_ta`), preventing generated code from importing system utilities.
   - `normalize_column_access(code_string: str) -> str`: Searches for indicator columns accessed with single/double quotes (e.g. `df['MACD_12_26_9']`) and normalizes the column name to lowercase (e.g. `df['macd_12_26_9']`) to match `pandas_ta` conventions.
   - `validate_indicators(code_string: str) -> tuple[bool, str]`: Checks if the code contains calls to indicators.
+  - `calculate_code_confidence(code_string: str) -> float`: Evaluates structural risk metrics of the generated code (e.g. checks lookahead bias risk, positional indexing `.iloc` density, masked errors via try/except, and magic number assignments). Returns a score between 0.0 and 1.0.
   - `sanitize(code_string: str) -> str`: Runs the complete validation pipeline. It checks security, strips unauthorized imports, normalizes indicator casing, wraps assignments via `EntryExitShifter`, checks for explicit declarations of `entries` and `exits`, and finally compiles the code using Python's native `compile()` function to check syntax before execution.
-
+ 
 ---
-
+ 
 ### Code Synthesis
-
+ 
 #### `AlphaAgent`
 * **Role**: Converts natural language intent into a script by generating and sanitizing the code.
 * **Attributes**:
-  - `MAX_RETRIES = 3`: Maximum compilation retry attempts.
+  - `MAX_RETRIES = 3`: Maximum compilation/confidence check retry attempts.
 * **Methods**:
-  - `generate_strategy_code(parsed_intent: dict) -> str`: Orchestrates the code generation.
+  - `generate_strategy_code(parsed_intent: dict) -> tuple[str, float]`: Orchestrates the code generation and structural checks.
     - **Workflow**:
       1. Renders the custom instruction prompt, injecting the indicator instructions from `SkillLibrary`.
       2. Calls `stream_chat_completion` to generate Python code.
       3. Passes the result to `CodeSanitizer.sanitize()`.
-      4. If a `SyntaxError` or validation error is raised during sanitization, it captures the message, appends the compiler error to the prompt, and submits it back to Gemini for correction (up to 3 times).
-      5. Returns the working code string.
+      4. If code compiles, runs `CodeSanitizer.calculate_code_confidence()` to grade its structure.
+      5. If a `SyntaxError` or low structural confidence (`score < 0.70`) is encountered, it captures the error/issue details, appends feedback to the prompt, and retries LLM generation (up to 3 times).
+      6. Returns a tuple: `(working_code_string, structural_confidence_score)`.
 
 ---
 

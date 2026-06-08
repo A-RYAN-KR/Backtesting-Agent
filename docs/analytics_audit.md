@@ -50,7 +50,7 @@ flowchart TD
 ```
 
 #### `PerformanceAnalyzer`
-* **Role**: Computes key performance indicators (KPIs) from the backtest results.
+* **Role**: Computes key performance indicators (KPIs) and statistical confidence metrics from the backtest results.
 * **Calculations**:
   - **Annualized Sharpe Ratio**:
     $$\text{Sharpe} = \frac{\mu_{\text{daily}}}{\sigma_{\text{daily}}} \times \sqrt{252}$$
@@ -65,8 +65,18 @@ flowchart TD
   - **Profit Factor**:
     $$\text{Profit Factor} = \frac{\sum \text{Positive Returns}}{\sum |\text{Negative Returns}|}$$
     *If total losses are zero, it returns infinity (`inf`).*
+  - **Statistical P-Value (Phase 3 Score)**:
+    - Calculates the standard error of the Sharpe ratio: `sharpe_error = np.sqrt((1 + (sharpe ** 2) / 2) / n_days)`.
+    - Derives the T-statistic: `t_stat = sharpe / sharpe_error`.
+    - Computes the statistical p-value: `p_value = 1 - stats.norm.cdf(t_stat)`.
+    - Assigns statistical score: `phase_3_score = 1.0 - p_value`.
+    - Penalizes `phase_3_score` by `50%` if win rate is absurdly high (>95%) or low (<10%).
+  - **Out-of-Sample (OOS) Decay**:
+    - Splits the backtest returns 70/30 into In-Sample (IS) and Out-of-Sample (OOS).
+    - Measures the decay ratio: `oos_sharpe / is_sharpe`.
+    - Penalizes `phase_3_score` by `30%` if the decay ratio is less than `0.10` or if the OOS return drops to negative, indicating high risk of curve-fitting.
 * **Methods**:
-  - `compute_metrics(portfolio) -> dict`: Extracts the return series from a VectorBT portfolio, performs calculations, and returns a dictionary of metrics.
+  - `compute_metrics(portfolio) -> dict`: Extracts the return series from a VectorBT portfolio, performs calculations, and returns a dictionary of metrics including Phase 3 scores.
 
 ---
 

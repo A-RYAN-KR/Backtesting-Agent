@@ -106,13 +106,16 @@ sequenceDiagram
 #### `QueryInterpreter`
 * **Role**: Translates natural language strategies into structured python parameters.
 * **Methods**:
-  - `parse(query: str, tickers: str) -> dict`: Orchestrates `QueryValidator` checks first. If valid, requests Gemini to extract the parameters into the `TradingStrategy` schema.
-  - **Structured Schema**: Conforms to `TradingStrategy`:
+  - `parse(query: str, tickers: str) -> dict`: Orchestrates `QueryValidator` checks first. If valid, requests Gemini to extract the parameters into the `TradingStrategyWithConfidence` schema.
+  - **Structured Schema**: Conforms to `TradingStrategyWithConfidence`:
     - `reasoning` (str): Step-by-step logic breakdown (Chain of Thought).
+    - `linguistic_confidence` (float): Self-assigned clarity score between 0.0 and 1.0.
+    - `numerical_completeness` (float): Self-assigned indicator parameter completeness score between 0.0 and 1.0.
     - `entry_logic` (str): Plain indicator-based entry signals.
     - `exit_logic` (str): Plain indicator-based exit signals.
     - `duration` (str): Standard yfinance duration format (e.g. "1y", "2y").
     - `tickers` (list[str]): Sanitized and capitalized symbols.
+  - **Early-Exit Gate**: Calculates an intent score: `(0.4 * linguistic_confidence) + (0.6 * numerical_completeness)`. If it is less than `0.70`, it returns `"REJECTED"` and halts execution.
 
 #### `DAGPlanner`
 * **Role**: Orchestrates pipeline task sequencing.

@@ -135,8 +135,15 @@ class BacktestingPipeline:
         self.bus.update_status("AlphaAgent", "Working")
         planner.update_node_status("Generate_Strategy_Code", "Running")
 
-        strategy_code = self.alpha_agent.generate_strategy_code(parsed)
-        print(f"\n  🤖  Generated Strategy Code:")
+        strategy_code, phase_2_score = self.alpha_agent.generate_strategy_code(parsed)
+        
+        if strategy_code.startswith("# Error"):
+            print(f"\n  ❌  Pipeline aborted: {strategy_code}")
+            planner.update_node_status("Generate_Strategy_Code", "Failed")
+            self.bus.update_status("AlphaAgent", "Idle")
+            return None
+
+        print(f"\n  🤖  Generated Strategy Code (Structural Confidence: {phase_2_score:.2f}):")
         print("  ┌─────────────────────────────────────────────")
         for line in strategy_code.strip().split("\n"):
             print(f"  │  {line}")
@@ -198,6 +205,25 @@ class BacktestingPipeline:
 
         report = ReportGenerator.generate_full_report(backtest_results, strategy_info)
 
+        # Calculate CCI & Verdict for each ticker
+        phase_1_score = parsed.get("phase_1_score", 1.0)
+        if report and "tickers" in report:
+            for ticker, data in report["tickers"].items():
+                if "error" in data:
+                    continue
+                metrics = data.get("metrics", {})
+                phase_3_score = metrics.get("phase_3_score", 0.0)
+                
+                # Calculate verdict
+                verdict_data = gatekeeper_verdict(phase_1_score, phase_2_score, phase_3_score)
+                data["verdict"] = verdict_data
+                
+                # Debug output for verification
+                print(f"\n  [GATEKEEPER] Verdict for {ticker}:")
+                print(f"    - CCI: {verdict_data['cci']}% (Linguistic: {phase_1_score:.2f}, Structural: {phase_2_score:.2f}, Statistical: {phase_3_score:.2f})")
+                print(f"    - Verdict: {verdict_data['verdict']}")
+                print(f"    - Action:  {verdict_data['action']}")
+
         planner.update_node_status("Generate_Report", "Completed")
         self.bus.update_status("ReportGenerator", "Idle")
 
@@ -216,6 +242,29 @@ class BacktestingPipeline:
         self.memory.close()
 
         return report
+
+
+def gatekeeper_verdict(phase_1_score: float, phase_2_score: float, phase_3_score: float) -> dict:
+    """Calculates the Composite Confidence Index (CCI) and determines the final system action."""
+    # Calculate CCI
+    cci = (0.2 * phase_1_score) + (0.3 * phase_2_score) + (0.5 * phase_3_score)
+    
+    # Map to routing table
+    if cci >= 0.85:
+        verdict = "🟢 HIGH CONFIDENCE"
+        action = "Approve for live paper trading. Capital allocation scaled to 100%."
+    elif cci >= 0.70:
+        verdict = "🟡 MARGINAL CONFIDENCE"
+        action = "Hold for manual audit. Alert user to potential curve-fitting or missing parameters."
+    else:
+        verdict = "🔴 REJECTED"
+        action = "Halt execution. Strategy rules are deemed statistical noise or unsafe."
+        
+    return {
+        "cci": round(cci * 100, 2),
+        "verdict": verdict,
+        "action": action
+    }
 
 
 # ═══════════════════════════════════════════════════════════

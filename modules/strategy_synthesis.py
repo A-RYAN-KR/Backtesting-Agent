@@ -115,6 +115,33 @@ class CodeSanitizer:
     ALLOWED_IMPORTS = {"pandas_ta"}
 
     @staticmethod
+    def calculate_code_confidence(code_string: str) -> float:
+        """Evaluates the structural integrity of the generated strategy code. Returns a score from 0.0 to 1.0."""
+        score = 100
+        
+        # Penalty 1: Missing shift logic (Lookahead bias risk)
+        if ".shift(" not in code_string:
+            score -= 25
+            print("  [PENALTY] Missing shift() logic. Lookahead bias likely.")
+
+        # Penalty 2: High density of positional index lookups (.iloc)
+        if code_string.count(".iloc") > 4:
+            score -= 15
+            print("  [PENALTY] Overreliance on positional indexing.")
+
+        # Penalty 3: Potential masked errors
+        if "try:" in code_string or "except" in code_string:
+            score -= 20
+            print("  [PENALTY] Contains try/except blocks. Potential logic masking.")
+            
+        # Penalty 4: Hardcoded variable assignments over 4 digits (potential overfitting magic numbers)
+        if re.search(r"==\s*\d{4,}|>\s*\d{4,}", code_string):
+            score -= 10
+            print("  [PENALTY] Hardcoded absolute values detected.")
+
+        return max(0.0, score / 100.0)
+
+    @staticmethod
     def enforce_entry_shift(code_string: str) -> str:
         """
         Applies .shift(1).fillna(False) to both entry and exit signals.
@@ -286,8 +313,8 @@ class AlphaAgent:
 
     MAX_RETRIES = 3
 
-    def generate_strategy_code(self, parsed_intent: dict) -> str:
-        """Generates strategy code from parsed NLP intent. Retries on syntax failures."""
+    def generate_strategy_code(self, parsed_intent: dict) -> tuple[str, float]:
+        """Generates strategy code from parsed NLP intent. Retries on syntax or low-confidence failures."""
 
         skill_context = SkillLibrary.format_skill_context()
 
@@ -363,8 +390,8 @@ class AlphaAgent:
                 if last_error and attempt > 1:
                     messages.append({
                         "role": "user",
-                        "content": f"Your previous code had a syntax error: {last_error}. "
-                                   f"Please fix it and output ONLY valid Python code. No markdown, no explanations."
+                        "content": f"Your previous code attempt failed or had structural issues: {last_error}. "
+                                   f"Please fix it and output ONLY valid, safe, high-confidence Python code. No markdown, no explanations."
                     })
 
                 raw_code = stream_chat_completion(
@@ -379,10 +406,21 @@ class AlphaAgent:
                 if not is_valid:
                     print(f"  ⚠️  {msg}")
 
-                return safe_code
+                # Phase 2 Gatekeeper Logic
+                phase_2_score = CodeSanitizer.calculate_code_confidence(safe_code)
+
+                if phase_2_score < 0.70:
+                    print(f"  ⚠️  Code confidence too low ({phase_2_score:.2f}). Retrying...")
+                    last_error = f"The generated code failed structural confidence constraints with score {phase_2_score:.2f} < 0.70. Avoid dangerous patterns (e.g., missing .shift() for crossovers, excessive iloc lookups, try/except blocks, hardcoded digits >= 4)."
+                    if attempt < self.MAX_RETRIES:
+                        continue
+                    else:
+                        return "# Error: Failed to generate high-confidence code.", phase_2_score
+
+                return safe_code, phase_2_score
 
             except SyntaxError as e:
-                last_error = str(e)
+                last_error = f"Syntax error: {e}"
                 print(f"\n  ⚠️  Code generation attempt {attempt}/{self.MAX_RETRIES} failed: {e}")
                 if attempt < self.MAX_RETRIES:
                     print(f"  🔄  Retrying code generation ...")

@@ -9,6 +9,7 @@ Module 5: Analytics & Audit ("The Eyes")
 import os
 import pandas as pd
 import numpy as np
+import scipy.stats as stats
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
@@ -137,6 +138,63 @@ class PerformanceAnalyzer:
             print(f"  │ Profit Factor computation failed")
         print(f"  └────────────────────────────────────────────────────")
 
+        # Calculate Statistical P-Value
+        if n_days > 10 and std_ret > 0 and sharpe != 0:
+            # Standard Error of Sharpe
+            sharpe_error = np.sqrt((1 + (sharpe ** 2) / 2) / n_days)
+            
+            # T-statistic
+            t_stat = sharpe / sharpe_error
+            p_value = 1 - stats.norm.cdf(t_stat)
+            
+            phase_3_score = float(1 - p_value) # 0.0 to 1.0
+        else:
+            phase_3_score = 0.0
+            p_value = 1.0
+            
+        # Penalize if win rate is absurdly high or low (indicates broken logic)
+        try:
+            if win_rate > 0.95 or win_rate < 0.10:
+                phase_3_score *= 0.5 
+        except Exception:
+            pass
+
+        # Split returns into In-Sample (IS) and Out-of-Sample (OOS) 70/30
+        split_idx = int(n_days * 0.7)
+        decay_ratio = 1.0
+        if split_idx > 5 and (n_days - split_idx) > 5:
+            is_returns = returns.iloc[:split_idx]
+            oos_returns = returns.iloc[split_idx:]
+            
+            is_cum_ret = (1 + is_returns).cumprod().iloc[-1] - 1
+            oos_cum_ret = (1 + oos_returns).cumprod().iloc[-1] - 1
+            
+            is_mean = is_returns.mean()
+            is_std = is_returns.std()
+            is_sharpe = (is_mean / is_std * np.sqrt(252)) if is_std > 0 else 0.0
+            
+            oos_mean = oos_returns.mean()
+            oos_std = oos_returns.std()
+            oos_sharpe = (oos_mean / oos_std * np.sqrt(252)) if oos_std > 0 else 0.0
+            
+            if is_sharpe > 0:
+                decay_ratio = oos_sharpe / is_sharpe
+                # If decay is massive (e.g. oos_sharpe is negative/extremely low or oos return is negative)
+                if decay_ratio < 0.10 or oos_cum_ret < 0:
+                    phase_3_score *= 0.7
+                    print(f"  [PENALTY] Massive OOS decay detected: decay_ratio={decay_ratio:.2f}, oos_cum_ret={oos_cum_ret:.2%}")
+        
+        phase_3_score = float(max(0.0, min(1.0, phase_3_score)))
+
+        # -- DEBUG: Phase 3 Statistical Edge -----------------
+        print(f"  +-- DEBUG: PHASE 3 STATISTICAL SCORE --------------------------")
+        print(f"  | n_days={n_days}  std_ret={float(std_ret):.6f}  sharpe={float(sharpe):.4f}")
+        if 'sharpe_error' in locals():
+            print(f"  | sharpe_error={sharpe_error:.6f}  t_stat={t_stat:.4f}  p_value={p_value:.6f}")
+        print(f"  | decay_ratio={decay_ratio:.4f}  win_rate={win_rate:.2%}")
+        print(f"  | phase_3_score={phase_3_score:.4f}")
+        print(f"  +----------------------------------------------------")
+
         return {
             "total_return": total_ret,
             "annualized_return": annualized_ret,
@@ -152,6 +210,9 @@ class PerformanceAnalyzer:
             "worst_day": float(returns.min()),
             "avg_daily_return": float(mean_ret),
             "trading_days": n_days,
+            "phase_3_score": phase_3_score,
+            "p_value": float(p_value),
+            "decay_ratio": float(decay_ratio),
         }
 
 
@@ -442,6 +503,10 @@ def print_final_summary(report: dict):
         print(f"  │ Volatility:      {m['volatility']:>9.2%}   │ P.Factor: {m['profit_factor']:>4.2f}  │")
         print(f"  │ Cost Drag:       {a['cost_drag']:>9.4%}   │ VaR 95%: {r.get('var_95', 0):>6.2%}  │")
         print(f"  │ {a['verdict'][:50]:<50s} │")
+        if "verdict" in data:
+            v_info = data["verdict"]
+            print(f"  │ CCI:            {v_info['cci']:>8.2f}%   │ Verdict: {v_info['verdict']}")
+            print(f"  │ Action: {v_info['action']}")
         print(f"  └─────────────────────────────────────────────────┘")
 
         if data.get("chart_path"):

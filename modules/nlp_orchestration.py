@@ -12,7 +12,7 @@ import json
 import re
 from datetime import datetime
 import time
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 import networkx as nx
 from config import GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 import urllib.request
@@ -194,12 +194,16 @@ class ValidationResult(BaseModel):
     error_message: str
 
 
-class TradingStrategy(BaseModel):
-    reasoning: str
+class TradingStrategyWithConfidence(BaseModel):
+    reasoning: str = Field(description="Chain of thought analysis of the user rules.")
+    linguistic_confidence: float = Field(description="Score between 0.0 and 1.0 indicating clarity of phrasing and use of standard financial terms.")
+    numerical_completeness: float = Field(description="Score between 0.0 and 1.0 indicating if all indicators have strict, explicit numbers.")
     entry_logic: str
     exit_logic: str
     duration: str
     tickers: list[str]
+
+TradingStrategy = TradingStrategyWithConfidence
 
 
 # ═══════════════════════════════════════════════════════════
@@ -268,22 +272,22 @@ class QueryInterpreter:
 
         print("  ✅  Validation passed. Parsing strategy …")
 
-        schema_str = _get_schema(TradingStrategy)
+        schema_str = _get_schema(TradingStrategyWithConfidence)
         prompt = f"""
-        You are an expert quantitative trading architect.
+        You are an expert quantitative trading architect. Analyze this query: "{query}" with tickers: "{tickers}".
+        Evaluate if the indicators are real, clear, and possess numeric parameters.
+        Assign a linguistic_confidence (clarity of phrasing, score from 0.0 to 1.0) and numerical_completeness (presence of exact values like RSI < 30, score from 0.0 to 1.0).
+
         Analyze the following user trading query and extract the core rules.
         Use Chain of Thought reasoning to explain how you interpret the indicators
         and rules before outputting the final structure.
-
-        User Query: "{query}"
-        Tickers: "{tickers}"
 
         IMPORTANT:
         - duration should be a string like "2y", "6mo", "1y", "max" etc. that yfinance accepts as a period.
         - tickers should be a list of ticker symbols, cleaned and uppercased.
         - entry_logic and exit_logic should be concise indicator-based rules.
 
-        Ensure you output the parsed Entry Logic, Exit Logic, Duration, and the Tickers.
+        Ensure you output the parsed Entry Logic, Exit Logic, Duration, Tickers, and confidence scores.
 
         Return a JSON object conforming strictly to the following JSON Schema:
         {schema_str}
@@ -295,13 +299,28 @@ class QueryInterpreter:
                 model=GEMINI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                response_schema=TradingStrategy,
+                response_schema=TradingStrategyWithConfidence,
                 print_stream=False
             )
             print(f"\n--- [DEBUG] Raw LLM Parse Response ---\n{content}\n---------------------------------------\n")
 
-            strategy = TradingStrategy.model_validate_json(content)
-            return {"status": "success", "message": "Strategy successfully parsed.", "data": strategy.model_dump()}
+            strategy = TradingStrategyWithConfidence.model_validate_json(content)
+            
+            # Phase 1 Gatekeeper Logic
+            intent_score = (0.4 * strategy.linguistic_confidence) + (0.6 * strategy.numerical_completeness)
+            
+            if intent_score < 0.70:
+                print(f"  ❌  Phase 1 intent confidence check failed: score = {intent_score:.2f} < 0.70")
+                return {
+                    "status": "REJECTED", 
+                    "message": f"Strategy prompt is too vague or lacks explicit numerical thresholds (score: {intent_score:.2f}). Please clarify your parameters.", 
+                    "data": None
+                }
+                
+            result_data = strategy.model_dump()
+            result_data["phase_1_score"] = intent_score
+            
+            return {"status": "success", "message": "Strategy successfully parsed.", "data": result_data}
         except Exception as e:
             return {"status": "error", "message": f"Parsing failed: {e}", "data": None}
 
