@@ -325,6 +325,7 @@ class AlphaAgent:
         Parsed Intent:
         - Entry Logic: {parsed_intent.get('entry_logic', '')}
         - Exit Logic: {parsed_intent.get('exit_logic', '')}
+        - Capital Allocation: {parsed_intent.get('capital_allocation', '1.0')}
 
         RULES:
         1. Assume `close_prices` is already provided as a Pandas Series (pd.Series).
@@ -340,6 +341,14 @@ class AlphaAgent:
         11. RISK TARGETS RULE: Never write mathematical expressions checking stop_loss or take_profit conditions.
         If the strategy mentions risk targets or stop losses, do NOT append them to the 'exits' boolean series.
         Keep 'exits' bound purely to technical indicator conditions.
+
+        12. MULTI-TICKER & CAPITAL ALLOCATION RULE (CRITICAL):
+        - The backtester evaluates assets one by one inside a loop.
+        - A string variable named `ticker` is automatically provided in the environment containing the uppercase symbol of the current asset being processed (e.g., 'RELIANCE' or 'TCS').
+        - You MUST initialize default values for `entries`, `exits`, and `allocation` at the very top of your code to prevent scope reference errors (e.g., `entries = pd.Series(False, index=close_prices.index)`).
+        - If the user query specifies a portfolio capital split or distinct rules for separate tickers, wrap your rule overwrites inside conditional structures checking the `ticker` variable (e.g., `if ticker == 'RELIANCE': ...`).
+        - Look at the 'Capital Allocation' data provided in the Parsed Intent. Convert those stated percentages into mathematical fractional floats (e.g., '50% capital to RELIANCE' translates to `allocation = 0.5`) inside that specific asset's condition block.
+        - NEVER try to lookup or index `close_prices` with a string key like `close_prices['RELIANCE']`. `close_prices` is ALWAYS a 1D pd.Series for the active ticker. Use it directly!
 
         PANDAS_TA COLUMN NAMING (CRITICAL — follow exactly):
         - All column names are LOWERCASED. Always access columns in lowercase.
@@ -380,6 +389,26 @@ class AlphaAgent:
         rsi = pandas_ta.rsi(close_prices, length=14)
         entries = rsi < 30
         exits = rsi > 70
+        allocation = 1.0
+
+        Example output format for multi-ticker / multi-portfolio strategies:
+        import pandas_ta
+        
+        # Initialize safe fallback defaults
+        entries = pd.Series(False, index=close_prices.index)
+        exits = pd.Series(False, index=close_prices.index)
+        allocation = 1.0
+        
+        if ticker == 'RELIANCE':
+            rsi = pandas_ta.rsi(close_prices, length=14)
+            entries = rsi < 30
+            exits = rsi > 60
+            allocation = 0.5
+        elif ticker == 'TCS':
+            sma = pandas_ta.sma(close_prices, length=200)
+            entries = (close_prices > sma) & (close_prices.shift(1) <= sma.shift(1))
+            exits = (close_prices < sma) & (close_prices.shift(1) >= sma.shift(1))
+            allocation = 0.5
         """
 
         last_error = None

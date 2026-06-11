@@ -24,12 +24,12 @@ sequenceDiagram
     SP->>SP: Inject PandasTAProxy & CaseInsensitiveDF
     SP->>SP: exec(code, namespace)
     Note over SP: Code assigns 'entries' & 'exits'
-    SP->>Q: Write (entries, exits, debug_indicators, error)
+    SP->>Q: Write (entries, exits, debug_indicators, allocation, error)
     deactivate SP
     BE->>Q: Read queue (timeout = 10s)
     Note over BE: If queue read fails, terminate process & raise TimeoutError
     BE->>BE: Trim 100-day warm-up padding using target_start_date
-    BE->>VBT: portfolio.from_signals(close, entries, exits)
+    BE->>VBT: portfolio.from_signals(close, entries, exits, price=open, init_cash * allocation)
     VBT-->>BE: Return VectorBT Portfolio object
     BE->>RA: compute_var(returns) & compute_cvar(returns)
     RA-->>BE: Value-at-Risk & Sizing Recommendations
@@ -99,27 +99,30 @@ sequenceDiagram
     1. Sets the `PYTHONPATH` environment variable to match the project root so child processes can resolve local imports.
     2. Spawns `_multiprocess_worker` to execute the code in an isolated process.
     3. Blocks on the multiprocessing queue. If execution exceeds the timeout threshold, it terminates the process and raises a `TimeoutError`.
+    4. Unpacks and returns `entries`, `exits`, `debug_indicators`, and the `allocation` factor.
   - `execute_strategy_code(code: str, price_data: dict) -> dict`:
-    1. Standardizes pricing variables (`close_prices`, `open_prices`, `high_prices`, `low_prices`, `volume`).
-    2. Passes the code and variables to `_exec_with_timeout`.
+    1. Standardizes, cleans, and realigns pricing variables (`close_prices`, `open_prices`, `high_prices`, `low_prices`) and the volume vector to guarantee strict timeline alignment and numeric types.
+    2. Passes the code, aligned series, and the current `ticker` context to `_exec_with_timeout`.
     3. Aligns the returned entry and exit signal indices.
-    4. Trims the 100-day warm-up padding using the `target_start_date` metadata.
-    5. Executes the backtest using VectorBT's signal execution engine:
+    4. Forces a terminal exit signal on the last day (`exits.iloc[-1] = True`) to safely flush open positions and prevent VectorBT/Numba compilation hangs.
+    5. Trims the 100-day warm-up padding using the `target_start_date` metadata.
+    6. Executes the backtest using VectorBT's signal execution engine, scaling starting cash by the dynamic allocation factor:
        ```python
-       portfolio = vbt.Portfolio.from_signals(
-           close_prices,
-           entries=entries,
-           exits=exits,
-           freq="1D",
-           init_cash=self.init_cash,
-           fees=0.0,
-           slippage=0.0,
-           upon_long_conflict='ignore',
-           upon_short_conflict='ignore',
-           upon_dir_conflict='ignore'
-       )
+        portfolio = vbt.Portfolio.from_signals(
+            close_prices,
+            entries=entries,
+            exits=exits,
+            price=open_prices,  # Executes trades at the Open of T+1
+            freq="1D",
+            init_cash=self.init_cash * allocation,
+            fees=0.0,
+            slippage=0.0,
+            upon_long_conflict='ignore',
+            upon_short_conflict='ignore',
+            upon_dir_conflict='ignore'
+        )
        ```
-    6. Formulates the final results dictionary, containing the portfolio object, win rate, trading metrics, and risk constraints.
+    7. Formulates the final results dictionary, containing the portfolio object, win rate, trading metrics, and risk constraints.
 
 ---
 

@@ -115,6 +115,7 @@ sequenceDiagram
     - `exit_logic` (str): Plain indicator-based exit signals.
     - `duration` (str): Standard yfinance duration format (e.g. "1y", "2y").
     - `tickers` (list[str]): Sanitized and capitalized symbols.
+    - `capital_allocation` (str): Details on how capital should be split among the tickers (e.g., '50% RELIANCE, 50% TCS'). Defaults to '100% per ticker'.
   - **Early-Exit Gate**: Calculates an intent score: `(0.4 * linguistic_confidence) + (0.6 * numerical_completeness)`. If it is less than `0.70`, it returns `"REJECTED"` and halts execution.
 
 #### `DAGPlanner`

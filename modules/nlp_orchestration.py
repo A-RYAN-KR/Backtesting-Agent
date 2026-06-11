@@ -202,6 +202,7 @@ class TradingStrategyWithConfidence(BaseModel):
     exit_logic: str
     duration: str
     tickers: list[str]
+    capital_allocation: str = Field(description="Details on how capital should be split among the tickers (e.g., '50% RELIANCE, 50% TCS'). Default to '100% per ticker' if not specified.")
 
 TradingStrategy = TradingStrategyWithConfidence
 

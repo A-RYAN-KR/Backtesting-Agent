@@ -163,15 +163,38 @@ def _multiprocess_worker(code: str, price_series_dict: dict, has_pandas_ta: bool
             except Exception:
                 pass
 
-        # Prepare namespace with all required variables and aliases
+        # Extract variables securely
+        raw_close = price_series_dict.get("close")
+        raw_open = price_series_dict.get("open")
+        raw_high = price_series_dict.get("high")
+        raw_low = price_series_dict.get("low")
+        raw_volume = price_series_dict.get("volume")
+
+        # 1. Clean the base timeline series
+        close_prices = pd.to_numeric(raw_close, errors="coerce").dropna()
+
+        # 2. Reindex and fill pricing data matrices to guarantee index uniformity
+        open_prices = pd.to_numeric(raw_open, errors="coerce").reindex(close_prices.index).fillna(close_prices)
+        high_prices = pd.to_numeric(raw_high, errors="coerce").reindex(close_prices.index).fillna(close_prices)
+        low_prices = pd.to_numeric(raw_low, errors="coerce").reindex(close_prices.index).fillna(close_prices)
+
+        # 3. Hard-align and sanitize volume vectors to prevent mathematical indicator hangs
+        if raw_volume is not None:
+            volume = pd.to_numeric(raw_volume, errors="coerce").reindex(close_prices.index).fillna(0.0)
+        else:
+            volume = pd.Series(0.0, index=close_prices.index, dtype=np.float64)
+
+        # Prepare namespace with clean matching structures
         namespace = {
             "pd": pd,
             "np": np,
-            "close_prices": price_series_dict.get("close"),
-            "open_prices": price_series_dict.get("open"),
-            "high_prices": price_series_dict.get("high"),
-            "low_prices": price_series_dict.get("low"),
-            "volume": price_series_dict.get("volume"),
+            "close_prices": close_prices,
+            "open_prices": open_prices,
+            "high_prices": high_prices,
+            "low_prices": low_prices,
+            "volume": volume,
+            "ticker": price_series_dict.get("ticker"),
+            "symbol": price_series_dict.get("ticker"),
             "pandas_ta": _pta_proxy,
             "ta": _pta_proxy,
             "pta": _pta_proxy,
@@ -183,6 +206,7 @@ def _multiprocess_worker(code: str, price_series_dict: dict, has_pandas_ta: bool
         # Retrieve entries and exits
         entries = namespace.get("entries")
         exits = namespace.get("exits")
+        allocation = namespace.get("allocation", 1.0)     # <--- ADDED: Default allocation is 100% (1.0)
 
         # Collect indicator stats for debugging
         debug_indicators = {}
@@ -200,11 +224,11 @@ def _multiprocess_worker(code: str, price_series_dict: dict, has_pandas_ta: bool
                     except Exception:
                         pass
 
-        # Put results back
-        result_queue.put((entries, exits, debug_indicators, None))
+        # Put results back (including allocation)
+        result_queue.put((entries, exits, debug_indicators, allocation, None))  # <--- UPDATED
     except Exception as e:
         import traceback
-        result_queue.put((None, None, None, (type(e).__name__, str(e), traceback.format_exc())))
+        result_queue.put((None, None, None, None, (type(e).__name__, str(e), traceback.format_exc())))  # <--- UPDATED
 
 
 # ═══════════════════════════════════════════════════════════
@@ -227,7 +251,7 @@ class BacktestEngine:
         self.risk_agent = RiskAgent()
 
     @staticmethod
-    def _exec_with_timeout(code: str, close_prices, open_prices, high_prices, low_prices, volume, has_pandas_ta: bool, timeout: int = 10):
+    def _exec_with_timeout(code: str, close_prices, open_prices, high_prices, low_prices, volume, ticker: str, has_pandas_ta: bool, timeout: int = 10):
         """
         Execute code with process isolation and a timeout to prevent infinite loops.
         """
@@ -235,7 +259,7 @@ class BacktestEngine:
         import os
         import sys
 
-        # FIX: Force the Windows child process to recognize the project root directory context
+        # Force the Windows child process to recognize the project root directory context
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         if "PYTHONPATH" in os.environ:
             if project_root not in os.environ["PYTHONPATH"].split(os.pathsep):
@@ -248,7 +272,8 @@ class BacktestEngine:
             "open": open_prices,
             "high": high_prices,
             "low": low_prices,
-            "volume": volume
+            "volume": volume,
+            "ticker": ticker  # <--- ADDED: Pack ticker symbol
         }
 
         ctx = multiprocessing.get_context("spawn")
@@ -262,21 +287,19 @@ class BacktestEngine:
 
         try:
             # Read from the queue FIRST to clear the buffer
-            entries, exits, debug_indicators, err = result_queue.get(timeout=timeout)
+            entries, exits, debug_indicators, allocation, err = result_queue.get(timeout=timeout)  # <--- UPDATED: Unpack allocation
         except queue.Empty:
-            # If the queue is empty after the timeout, it's a true infinite loop
             p.terminate()
             p.join()
             raise TimeoutError(f"Code execution exceeded {timeout}s timeout")
 
-        # Now it is safe to cleanly join the process
         p.join(timeout=1)
 
         if err is not None:
             err_type, err_msg, tb_str = err
             raise RuntimeError(f"{err_type}: {err_msg}\n{tb_str}")
 
-        return entries, exits, debug_indicators
+        return entries, exits, debug_indicators, allocation  # <--- UPDATED: Return allocation
 
     def execute_strategy_code(self, code: str, price_data: dict) -> dict:
         """
@@ -295,18 +318,29 @@ class BacktestEngine:
             print(f"\n  ⚙️  Running backtest for {ticker} …")
 
             try:
-                # Prepare data variables the generated code expects
-                close_prices = df["Close"] if "Close" in df.columns else df["close"]
+                # Prepare data variables the generated code expects safely
+                close_prices = df["Close"] if "Close" in df.columns else df.get("close")
+                if close_prices is None:
+                    raise KeyError(f"Could not find a valid Close/close column for ticker {ticker}")
+
                 open_prices = df["Open"] if "Open" in df.columns else df.get("open", close_prices)
                 high_prices = df["High"] if "High" in df.columns else df.get("high", close_prices)
                 low_prices = df["Low"] if "Low" in df.columns else df.get("low", close_prices)
-                volume = df["Volume"] if "Volume" in df.columns else df.get("volume", pd.Series(0, index=df.index))
+                volume = df["Volume"] if "Volume" in df.columns else df.get("volume")
 
-                # Ensure numeric types
+                # 1. First establish a clean, strictly numeric closing base series
                 close_prices = pd.to_numeric(close_prices, errors="coerce").dropna()
+
+                # 2. Hard-align and reindex all secondary price series to the base closing index
                 open_prices = pd.to_numeric(open_prices, errors="coerce").reindex(close_prices.index).fillna(close_prices)
                 high_prices = pd.to_numeric(high_prices, errors="coerce").reindex(close_prices.index).fillna(close_prices)
                 low_prices = pd.to_numeric(low_prices, errors="coerce").reindex(close_prices.index).fillna(close_prices)
+
+                # 3. CRITICAL: Reindex, sanitize, and fill volume array to prevent downstream execution locks
+                if volume is not None:
+                    volume = pd.to_numeric(volume, errors="coerce").reindex(close_prices.index).fillna(0.0)
+                else:
+                    volume = pd.Series(0.0, index=close_prices.index, dtype=np.float64)
 
                 # ── DEBUG: Data shape validation ────────────────
                 print(f"\n  ┌── DEBUG: DATA VALIDATION ({ticker}) ──────────────────────────")
@@ -348,13 +382,14 @@ class BacktestEngine:
 
                 # Execute with timeout to prevent infinite loops from LLM hallucinations
                 try:
-                    entries, exits, debug_indicators = self._exec_with_timeout(
+                    entries, exits, debug_indicators, allocation = self._exec_with_timeout(
                         patched_code,
                         close_prices,
                         open_prices,
                         high_prices,
                         low_prices,
                         volume,
+                        ticker,  # <--- ADDED: Pass the current ticker context
                         _pta_proxy is not None,
                         timeout=self.EXEC_TIMEOUT
                     )
@@ -420,13 +455,17 @@ class BacktestEngine:
                 print(f"  │ Flat fee rate: {fees:.4f} ({fees*100:.2f}%)")
                 print(f"  └────────────────────────────────────────────────────")
 
+                # FORCE TERMINAL EXIT: Prevents VectorBT/Numba compilation hangs on open boundary regimes
+                exits.iloc[-1] = True # <--- ADD THIS LINE TO FORCE PORTFOLIO CLOSURE ON LAST DAY
+
                 # Run VectorBT portfolio directly on raw signals with native conflict resolution
                 portfolio = vbt.Portfolio.from_signals(
                     close_prices,
                     entries=entries,
                     exits=exits,
+                    price=open_prices,  # <--- FIX: Executes trades at the Open of T+1
                     freq="1D",
-                    init_cash=self.init_cash,
+                    init_cash=self.init_cash * allocation,  # <--- UPDATED: Sized dynamically based on allocation rules!
                     fees=fees,
                     slippage=slippage,
                     upon_long_conflict='ignore',  # Ignores new BUY signals if already LONG

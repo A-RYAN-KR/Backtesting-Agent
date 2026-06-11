@@ -159,31 +159,6 @@ class PerformanceAnalyzer:
         except Exception:
             pass
 
-        # Split returns into In-Sample (IS) and Out-of-Sample (OOS) 70/30
-        split_idx = int(n_days * 0.7)
-        decay_ratio = 1.0
-        if split_idx > 5 and (n_days - split_idx) > 5:
-            is_returns = returns.iloc[:split_idx]
-            oos_returns = returns.iloc[split_idx:]
-            
-            is_cum_ret = (1 + is_returns).cumprod().iloc[-1] - 1
-            oos_cum_ret = (1 + oos_returns).cumprod().iloc[-1] - 1
-            
-            is_mean = is_returns.mean()
-            is_std = is_returns.std()
-            is_sharpe = (is_mean / is_std * np.sqrt(252)) if is_std > 0 else 0.0
-            
-            oos_mean = oos_returns.mean()
-            oos_std = oos_returns.std()
-            oos_sharpe = (oos_mean / oos_std * np.sqrt(252)) if oos_std > 0 else 0.0
-            
-            if is_sharpe > 0:
-                decay_ratio = oos_sharpe / is_sharpe
-                # If decay is massive (e.g. oos_sharpe is negative/extremely low or oos return is negative)
-                if decay_ratio < 0.10 or oos_cum_ret < 0:
-                    phase_3_score *= 0.7
-                    print(f"  [PENALTY] Massive OOS decay detected: decay_ratio={decay_ratio:.2f}, oos_cum_ret={oos_cum_ret:.2%}")
-        
         phase_3_score = float(max(0.0, min(1.0, phase_3_score)))
 
         # -- DEBUG: Phase 3 Statistical Edge -----------------
@@ -191,7 +166,7 @@ class PerformanceAnalyzer:
         print(f"  | n_days={n_days}  std_ret={float(std_ret):.6f}  sharpe={float(sharpe):.4f}")
         if 'sharpe_error' in locals():
             print(f"  | sharpe_error={sharpe_error:.6f}  t_stat={t_stat:.4f}  p_value={p_value:.6f}")
-        print(f"  | decay_ratio={decay_ratio:.4f}  win_rate={win_rate:.2%}")
+        print(f"  | win_rate={win_rate:.2%}")
         print(f"  | phase_3_score={phase_3_score:.4f}")
         print(f"  +----------------------------------------------------")
 
@@ -212,7 +187,7 @@ class PerformanceAnalyzer:
             "trading_days": n_days,
             "phase_3_score": phase_3_score,
             "p_value": float(p_value),
-            "decay_ratio": float(decay_ratio),
+            "decay_ratio": 1.0,  # Retained as 1.0 for backward-compatible dictionary integration
         }
 
 

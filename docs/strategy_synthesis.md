@@ -101,7 +101,7 @@ flowchart TD
 * **Methods**:
   - `generate_strategy_code(parsed_intent: dict) -> tuple[str, float]`: Orchestrates the code generation and structural checks.
     - **Workflow**:
-      1. Renders the custom instruction prompt, injecting the indicator instructions from `SkillLibrary`.
+      1. Renders the custom instruction prompt, injecting the indicator instructions from `SkillLibrary` and guidelines for multi-ticker dynamic capital allocation (using conditional blocks checking the `ticker` variable and configuring the `allocation` float).
       2. Calls `stream_chat_completion` to generate Python code.
       3. Passes the result to `CodeSanitizer.sanitize()`.
       4. If code compiles, runs `CodeSanitizer.calculate_code_confidence()` to grade its structure.
