@@ -258,8 +258,12 @@ class DataRouter:
                 sliced.attrs["target_start_date"] = target_start_naive
                 return sliced
 
-        # Route to right agent — all tickers go through Indian market path
-        if symbol.endswith(".NS") or symbol.endswith(".BO"):
+        # Route to right agent
+        if symbol.startswith("^"):
+            # It's an index! Route directly to yfinance without modifying the ticker
+            source = "yfinance"
+            df = self.yf_agent.fetch(symbol, start=padded_start_date)
+        elif symbol.endswith(".NS") or symbol.endswith(".BO"):
             source = "yfinance"
             df = self.yf_agent.fetch(symbol, start=padded_start_date)
         else:

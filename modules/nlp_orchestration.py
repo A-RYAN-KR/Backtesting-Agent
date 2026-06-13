@@ -213,25 +213,26 @@ TradingStrategy = TradingStrategyWithConfidence
 class QueryValidator:
     """Validates the trading query for missing data, vagueness, or fake indicators."""
 
-    def validate(self, query: str, tickers: str) -> dict:
+    def validate(self, query: str, tickers: str | None = None) -> dict:
         # Static hard checks
         if not query or len(query.strip()) < 10:
             return {"is_valid": False, "error_message": "Query is too short or missing."}
-        if not tickers or len(tickers.strip()) == 0:
+        if tickers is not None and len(tickers.strip()) == 0:
             return {"is_valid": False, "error_message": "No tickers provided. Please specify at least one symbol."}
 
         schema_str = _get_schema(ValidationResult)
+        tickers_part = f'\n        Tickers: "{tickers}"' if tickers else ''
         prompt = f"""
         You are a strict validation agent for a quantitative trading system.
-        Review the following user query and tickers.
+        Review the following user query.
 
         Rules for Validity:
         1. The query MUST contain actionable trading logic (e.g., conditions for buying/selling).
         2. The technical indicators mentioned MUST be real, standard financial indicators (e.g., RSI, MACD, SMA, Bollinger Bands).
-        3. If the query uses made-up indicators or is completely vague, it is INVALID.
+        3. The query MUST mention or imply ticker symbols to trade (e.g., RELIANCE, TCS, NIFTY, ^NSEI, etc.) unless they are specified separately.
+        4. If the query uses made-up indicators, is completely vague, or does not specify ticker symbols, it is INVALID.
 
-        User Query: "{query}"
-        Tickers: "{tickers}"
+        User Query: "{query}"{tickers_part}
 
         If invalid, provide a clear, concise error_message explaining why. If valid, leave error_message as empty string.
 
@@ -263,7 +264,7 @@ class QueryInterpreter:
     def __init__(self):
         self.validator = QueryValidator()
 
-    def parse(self, query: str, tickers: str) -> dict:
+    def parse(self, query: str, tickers: str | None = None) -> dict:
         print("  🔍  Validating query …")
         validation = self.validator.validate(query, tickers)
 
@@ -274,18 +275,19 @@ class QueryInterpreter:
         print("  ✅  Validation passed. Parsing strategy …")
 
         schema_str = _get_schema(TradingStrategyWithConfidence)
+        tickers_part = f' with tickers: "{tickers}"' if tickers else ''
         prompt = f"""
-        You are an expert quantitative trading architect. Analyze this query: "{query}" with tickers: "{tickers}".
+        You are an expert quantitative trading architect. Analyze this query: "{query}"{tickers_part}.
         Evaluate if the indicators are real, clear, and possess numeric parameters.
         Assign a linguistic_confidence (clarity of phrasing, score from 0.0 to 1.0) and numerical_completeness (presence of exact values like RSI < 30, score from 0.0 to 1.0).
 
-        Analyze the following user trading query and extract the core rules.
-        Use Chain of Thought reasoning to explain how you interpret the indicators
+        Analyze the following user trading query and extract the core rules, ticker symbols, and duration.
+        Use Chain of Thought reasoning to explain how you interpret the indicators, ticker symbols, duration,
         and rules before outputting the final structure.
 
         IMPORTANT:
-        - duration should be a string like "2y", "6mo", "1y", "max" etc. that yfinance accepts as a period.
-        - tickers should be a list of ticker symbols, cleaned and uppercased.
+        - duration should be a string like "2y", "6mo", "1y", "max" etc. that yfinance accepts as a period. If not specified or implied, default to a reasonable period (e.g., "2y").
+        - tickers should be a list of ticker symbols, cleaned and uppercased (e.g., ["RELIANCE", "TCS"] or ["^NSEI"]).
         - entry_logic and exit_logic should be concise indicator-based rules.
 
         Ensure you output the parsed Entry Logic, Exit Logic, Duration, Tickers, and confidence scores.

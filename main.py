@@ -81,7 +81,7 @@ class BacktestingPipeline:
 
         print("  ✅  All agents initialized and registered.\n")
 
-    def run(self, query: str, tickers: str, market: str = DEFAULT_MARKET) -> dict | None:
+    def run(self, query: str, tickers: str | None = None, market: str = DEFAULT_MARKET) -> dict | None:
         """
         Execute the full backtesting pipeline.
 
@@ -98,7 +98,8 @@ class BacktestingPipeline:
         print("  📡  BACKTESTING AGENT — PIPELINE START")
         print("═" * 70)
         print(f"\n  Query:   {query}")
-        print(f"  Tickers: {tickers}")
+        if tickers:
+            print(f"  Tickers: {tickers}")
         print(f"  Market:  {market}\n")
 
         # ── Step 1: NLP & Orchestration ─────────────────────
@@ -285,22 +286,15 @@ def interactive_mode():
 
     while True:
         print("\n" + "─" * 60)
-        query = input("📝 Enter your trading strategy:\n   → ").strip()
+        query = input("📝 Enter your trading query (containing strategy, tickers, and duration):\n   → ").strip()
         if query.lower() in ("quit", "exit", "q"):
             print("   👋 Goodbye!")
             break
         if not query:
-            print("   ⚠️  Please enter a strategy description.")
+            print("   ⚠️  Please enter a trading query.")
             continue
 
-        tickers = input("📊 Enter ticker symbols (comma-separated):\n   → ").strip()
-        if not tickers:
-            print("   ⚠️  Please enter at least one ticker symbol.")
-            continue
-
-        market = input("🌍 Market? (IN / NSE / BSE) [default: IN]:\n   → ").strip() or "IN"
-
-        pipeline.run(query, tickers, market)
+        pipeline.run(query, tickers=None, market="IN")
 
 
 def main():
@@ -310,16 +304,16 @@ def main():
         epilog="""
 Examples:
   python main.py
-  python main.py --query "Buy when RSI < 30, sell when RSI > 70" --tickers "RELIANCE,TCS" --market IN
+  python main.py --query "Buy RELIANCE when RSI < 30, sell when RSI > 70 for the last 2 years"
         """,
     )
-    parser.add_argument("--query", "-q", help="Trading strategy in natural language")
-    parser.add_argument("--tickers", "-t", help="Comma-separated ticker symbols")
+    parser.add_argument("--query", "-q", help="Trading query in natural language containing tickers, strategy, and duration")
+    parser.add_argument("--tickers", "-t", help="Optional comma-separated ticker symbols")
     parser.add_argument("--market", "-m", default="IN", help="Market: IN, NSE, BSE (default: IN)")
 
     args = parser.parse_args()
 
-    if args.query and args.tickers:
+    if args.query:
         # Single-shot mode
         pipeline = BacktestingPipeline()
         pipeline.run(args.query, args.tickers, args.market)
