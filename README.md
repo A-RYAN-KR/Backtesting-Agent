@@ -1,4 +1,4 @@
-<img width="1078" height="582" alt="image" src="https://github.com/user-attachments/assets/5f7e5f9e-2c24-40cd-9581-421ef4e169ed" /># 🤖 Backtesting Agent: Autonomous Quantitative Research Pipeline
+# 🤖 Backtesting Agent: Autonomous Quantitative Research Pipeline
 
 ## 1. Problem Statement
 In quantitative finance, the gap between a **trading idea** (expressed in natural language) and a **validated backtest** (executable vectorized code) is significant. Traders often face:
