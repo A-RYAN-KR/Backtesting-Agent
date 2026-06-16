@@ -1,24 +1,24 @@
 # 🤖 Backtesting Agent: Autonomous Quantitative Research Pipeline
 
-## 1. Problem Statement
-In quantitative finance, the gap between a **trading idea** (expressed in natural language) and a **validated backtest** (executable vectorized code) is significant. Traders often face:
-- **Coding Barriers**: Implementing complex vectorized logic (like VectorBT) requires high technical proficiency.
-- **Lookahead Bias**: Manual implementation often leads to "cheating" by using future data in entry signals.
-- **Data Fragmentation**: Fetching, cleaning, and caching multi-market data is a repetitive and error-prone process.
-- **Incomplete Analytics**: Many tools provide raw returns but fail to account for market-specific costs (STT, GST in India) or provide deep risk metrics like VaR and CVaR.
-
-## 2. Objectives
-The Backtesting Agent is designed to be an **autonomous quantitative researcher** that:
-- **Bridges the Gap**: Converts plain English strategy descriptions into high-performance Python code.
-- **Ensures Integrity**: Automatically applies lookahead-bias guards (shifts) and sanitizes code logic.
-- **Automates Data**: Manages the end-to-end data lifecycle from fetching (YFinance) to local storage (DuckDB).
-- **Professional Grade Analytics**: Generates institutional-level reports including interactive equity curves and factor attribution.
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python Version" />
+  <img src="https://img.shields.io/badge/LLM-Google%20Gemini-4285F4?style=flat-square&logo=google-gemini&logoColor=white" alt="LLM Engine" />
+  <img src="https://img.shields.io/badge/Backtest-VectorBT-orange?style=flat-square" alt="Backtest Engine" />
+  <img src="https://img.shields.io/badge/Database-DuckDB-FFF000?style=flat-square&logo=duckdb&logoColor=black" alt="Database Cache" />
+  <img src="https://img.shields.io/badge/Visuals-Plotly-3F4F75?style=flat-square&logo=plotly&logoColor=white" alt="Charts" />
+</p>
 
 ---
 
-## 3. High-Level Architecture & Confidence Gatekeeper
+## 📈 Overview
 
-The Backtesting Agent implements a modular, agentic structure governed by a **Confidence Scoring Framework** that acts as an Execution Gatekeeper Pipeline:
+The **Backtesting Agent** is an autonomous quantitative researcher that bridges the gap between natural language trading ideas and validated, lookahead-bias-safe backtests. By converting plain English strategy descriptions into high-performance Python code using VectorBT, the agent automates the end-to-end research workflow—from multi-market data ingestion and DuckDB caching to portfolio execution and institutional-grade risk analysis.
+
+---
+
+## 🧭 High-Level Execution Gatekeeper
+
+The pipeline is managed by a **Confidence Scoring Framework** that enforces strict gates before any strategy is executed or approved:
 
 ```
            [User Prompt]
@@ -35,7 +35,7 @@ The Backtesting Agent implements a modular, agentic structure governed by a **Co
                  │
                  ▼
      ┌───────────────────────┐
-     │  Phase 3: Statistical │ ──► Calculates p-value & OOS Decay
+     │  Phase 3: Statistical │ ──► Calculates Sharpe p-value
      └───────────────────────┘
                  │
                  ▼
@@ -49,179 +49,211 @@ The Backtesting Agent implements a modular, agentic structure governed by a **Co
      🟢 Approved     🟡 Manual Audit     🔴 Rejected
 ```
 
-The **Composite Confidence Index (CCI)** determines the deployment status:
-- **CCI >= 85% (Approved)**: Strategy is approved for trading/paper trading.
-- **70% <= CCI < 85% (Manual Audit)**: Strategy is put on hold for manual refinement.
-- **CCI < 70% (Rejected)**: Halt execution and notify user of logical or security failure.
+> [!NOTE]
+> The **Composite Confidence Index (CCI)** acts as the deployment routing gate:
+> - **🟢 Approved (CCI >= 85%)**: Automatically verified and scaled to 100% capital allocation.
+> - **🟡 Manual Audit (70% <= CCI < 85%)**: Strategy held for user intervention to fix phrasing or parameters.
+> - **🔴 Rejected (CCI < 70%)**: Halted immediately to prevent execution of invalid logic or security violations.
 
 ---
 
-## 4. Deep-Dive Module Architecture
+## 🏗️ Detailed Architecture & Component Pillars
 
-The system is split into **five main components** that execute sequentially under graph-based orchestration.
+The system is structured as five sequential, graph-orchestrated modules.
 
 ### 🧠 Module 1: NLP & Orchestration ("The Brain")
-Responsible for parsing the trader's natural language input, validating indicators, constructing a Directed Acyclic Graph (DAG) for execution, and managing execution states.
 
-![NLP Architecture](docs/assets/NLP.png)
+Processes raw queries, validates symbols, schedules execution nodes, and persists session states.
 
-#### Key Design Pillars:
-- **Schema Integrity**: Uses `Pydantic` validation to force unstructured LLM outputs into typed, predictable structures (`TradingStrategyWithConfidence` schema) before compilation.
-- **Graph-based Scheduling**: Employs `networkx` to build and sequence the execution tasks dynamically. Allows concurrent data fetches for multi-ticker strategies.
-- **Linguistic Quality Gate**: Computes an intent score based on phrasing clarity and numerical completeness:
+<p align="center">
+  <img src="docs/assets/NLP.png" alt="NLP Architecture" width="800" style="border-radius: 8px;" />
+</p>
+
+#### Core Pillars:
+- **Linguistic Quality Gate**: Calculates a weighted score checking phrasing clarity and numerical indicator completeness:
   $$\text{Intent Score} = 0.4 \times \text{Linguistic Confidence} + 0.6 \times \text{Numerical Completeness}$$
-  If the score is $< 0.70$, execution is halted immediately.
-- **Memory Tracing**: Logs execution runs to a **Neo4j** graph database, falling back gracefully to local memory list if connection fails.
+- **DAG Scheduling**: Constructs dynamic execution plans using `networkx`. This allows concurrent data fetching tasks to run in parallel.
+- **Schema Enforcement**: Employs `Pydantic` structures (`TradingStrategyWithConfidence`) to prevent model hallucination drift.
+- **State Logging**: Records execution paths in a **Neo4j** graph database, utilizing a thread-safe local memory fallback if connection is offline.
 
 ---
 
 ### 📝 Module 2: Strategy Synthesis ("The Translator")
-Translates structured strategy configuration parameters into executable Python statements tailored for the `VectorBT` framework.
 
-![Strategy Synthesis Architecture](docs/assets/Strategy%20Synthesis.png)
+Translates natural language intentions into clean, vectorized Python code compliant with VectorBT.
 
-#### Key Design Pillars:
-- **AST Modification (Lookahead Guard)**: Uses Python's native `ast` compiler to parse generated code into Abstract Syntax Trees. It targets and transforms assignments to `entries` and `exits` variables, appending `.shift(1).fillna(False)` to guarantee lookahead-bias safety at a structural syntax level rather than relying on prompts.
-- **Iterative Self-Healing**: Implements a compiler loop that executes syntactical validation using `compile()`. If syntax errors are caught, the traceback feedback is routed back to Gemini for up to 3 automated correction retries.
-- **Security Sanitization**: The `CodeSanitizer` enforces a strict import allowlist (only allowing `pandas_ta`), normalizes dataframe column references to lowercase, and checks for malicious command keywords (`os`, `sys`, `eval`, etc.).
-- **Skill Library**: Injects precise code templates for popular indicators (`RSI`, `SMA`, `EMA`, `MACD`, `BBANDS`, etc.) directly into the LLM system instructions to guide code generation.
+<p align="center">
+  <img src="docs/assets/Strategy%20Synthesis.png" alt="Strategy Synthesis Architecture" width="800" style="border-radius: 8px;" />
+</p>
+
+#### Core Pillars:
+- **AST Transformation (Lookahead Guard)**: Uses Python's native `ast` compiler to rewrite the generated source tree. It automatically appends `.shift(1).fillna(False)` to `entries` and `exits` assignments, mathematically isolating the strategy from future-lookahead bias.
+- **Self-Correction Compiler**: Runs `compile()` inside validation wrappers. If syntax errors occur, the traceback is piped back to Gemini for up to 3 automated self-healing retries.
+- **Strict Code Sanitization**: The `CodeSanitizer` enforces an import whitelist (`pandas_ta`), maps indicator string casing, and rejects blacklisted system functions (`os`, `sys`, `eval`, etc.).
+- **Predefined Skill Library**: Pre-loads modular snippets for major indicators (`RSI`, `SMA`, `EMA`, `MACD`, `BBANDS`, `STOCH`, `ATR`) to guide code precision.
 
 ---
 
 ### 💾 Module 3: Data & Market Connectivity ("The Heart")
-Handles the end-to-end data lifecycle, caching, and market routing for stock and index queries.
 
-![Data Connectivity Architecture](docs/assets/Data%20Connectivity.png)
+Manages market adapters, cache synchronization, and transaction costs modeling.
 
-#### Key Design Pillars:
-- **OLAP Caching with DuckDB**: Integrates a local analytical DuckDB cache storing timezone-naive historical pricing. Columnar storage ensures zero-copy DataFrame integrations, yielding highly efficient reads/writes compared to row-based engines.
-- **Warm-Up Padding**: Automatically fetches an extra 100 days of historical data prior to the requested start date. This ensures indicators requiring history (like EMAs) warm up fully, avoiding inaccurate signals at the start of backtests. The warm-up padding is sliced off before execution.
-- **Market Adapters**: Resolves Indian equity suffixes (`.NS`/`.BO`) via the `OpenAlgoAgent` and fetches data through Yahoo Finance, handling cache invalidation if cached boundaries are stale (> 5 days) or incomplete.
-- **Transaction Costs Adaptor**: The `IndianEquityAdaptor` provides localized modular structures to model STT, GST, stamp duty, and brokerage fees for delivery vs. intraday trades.
+<p align="center">
+  <img src="docs/assets/Data%20Connectivity.png" alt="Data Connectivity Architecture" width="800" style="border-radius: 8px;" />
+</p>
+
+#### Core Pillars:
+- **DuckDB OLAP Cache**: Caches historical market rates using an embedded columnar DuckDB database. Columnar storage facilitates instant, zero-copy conversion into Pandas DataFrames.
+- **Warm-Up Padding**: Fetches an extra 100 days of historical records prior to the target start date. This prevents leading edge indicator distortions (e.g. EMAs) by trimming the warm-up padding right before signals are processed.
+- **Adapters & Routing**: Employs `OpenAlgoAgent` to handle Indian stock tickers (mapping to `.NS` or `.BO` automatically) and fetches via Yahoo Finance.
+- **Cost Attributors**: Integrates the `IndianEquityAdaptor` to provide hook-points for Indian market fee structures (STT, stamp duty, GST, and broker commissions).
 
 ---
 
 ### ⚙️ Module 4: Execution & Portfolio Engine ("The Engine")
-Sandboxes dynamic code compilation, standardizes execution data structures, and runs backtests.
 
-![Execution Engine Architecture](docs/assets/Execution%20Engine.png)
+Runs the synthesized code safely in sandbox processes and processes signal evaluations.
 
-#### Key Design Pillars:
-- **Isolated Sandbox Execution**: Evaluates generated code inside a spawned child process (`multiprocessing` with a `"spawn"` method) with a strict 10-second timeout. This protects the orchestrator against infinite loops, memory leaks, or crashes in generated scripts.
-- **Casing Tolerance**: Wraps DataFrames with `CaseInsensitiveDF` to intercept indexing operations and normalize column queries (supporting fuzzy and case-insensitive matching).
-- **Tail Risk Analytics**: Incorporates `RiskAgent` which calculates historical Value-at-Risk (VaR) and Conditional Value-at-Risk (CVaR).
-- **Leverage Constraint Gates**: Calculates position-sizing adjustments dynamically based on risk limits:
+<p align="center">
+  <img src="docs/assets/Execution%20Engine.png" alt="Execution Engine Architecture" width="800" style="border-radius: 8px;" />
+</p>
+
+#### Core Pillars:
+- **Process Sandboxing**: Spawns executions in separate child processes with a strict 10-second timeout. This isolates the orchestrator process from infinite loops, runtime hangs, or memory leaks.
+- **Casing & Proxy Wrappers**: Uses `CaseInsensitiveDF` and `PandasTAProxy` to dynamically catch and resolve case mismatching (e.g. `close` vs `Close`, `MACD_12_26_9` vs `macd_12_26_9`).
+- **Leverage Sizing Adjuster**: Uses the `RiskAgent` to calculate Value-at-Risk (VaR) and Conditional Value-at-Risk (CVaR). If VaR exceeds limits (default: -2.0% daily), it dynamically scales down the strategy leverage:
   $$\text{Leverage Factor} = \frac{\text{Maximum Acceptable VaR}}{\text{Strategy VaR}}$$
-- **Signal Realignment**: Realigns and forces terminal signal exits on the final bar to prevent numba compilation hangs and ensure all positions are closed out.
+- **Conflict & Exit Handling**: Runs VectorBT signal execution with conflict resolutions (`upon_long_conflict='ignore'`, etc.) and forces market exit triggers on the final bar.
 
 ---
 
 ### 📊 Module 5: Analytics & Audit ("The Eyes")
-Performs post-backtest diagnostics, parses returns, and outputs both console dashboards and visual tearsheets.
 
-![Analytics Architecture](docs/assets/Analytics.png)
+Runs statistics, evaluates transaction costs drag, and generates interactive reports.
 
-#### Key Design Pillars:
-- **KPI Analysis**: Computes Sharpe, Sortino, Calmar, profit factors, and maximum drawdowns. Employs downside deviation for Sortino calculations to avoid penalizing positive volatility.
-- **Statistical Significance**: Evaluates p-values to verify strategy performance stability vs random chance, penalizing score cards if win rates show abnormal curve fitting (>95% or <10%).
-- **Interactive Visualizations**: Generates dynamic, multi-plot Plotly charts displaying the equity curve, drawdown timeline, and daily return histograms.
-- **Institutional Tearsheets**: Triggers `QuantStats` tearsheets comparing strategy returns against index benchmarks (`^NSEI`). Implements custom fallback error pages if the strategy generated zero trades, avoiding library crashes.
+<p align="center">
+  <img src="docs/assets/Analytics.png" alt="Analytics Architecture" width="800" style="border-radius: 8px;" />
+</p>
 
----
-
-## 5. Unified End-to-End Workflow
-
-The Backtesting Agent operates in five distinct pipeline steps:
-
-1. **Intent Extraction & Verification (Phase 1)**: User submits query. `QueryInterpreter` structures intent and scores linguistic quality. If $<0.70$, execution halts.
-2. **DAG Planning**: `DAGPlanner` generates task nodes and schedules data fetching tasks in topological execution order.
-3. **Synthesis & AST Sanitization (Phase 2)**: `AlphaAgent` generates the VectorBT script. The sanitizer validates imports, rewrites code nodes to add lookahead shifts, and validates compilation. If verification fails, it retries up to 3 times.
-4. **Isolated Execution**: `BacktestEngine` spawns a sandboxed process, runs the code, realigns signals, trims padding, and fires trade executions in VectorBT.
-5. **Analytics & Global CCI Verdict (Phase 3)**: Performance analyzer computes statistical metrics (Sortino, Sharpe, p-value), generates HTML reports (Plotly + QuantStats), and prints the dashboard.
+#### Core Pillars:
+- **KPI Matrix**: Calculates Sharpe, Sortino, Calmar, profit factor, and drawdowns. Sortino computation adjusts standard errors for single-day negative variances to avoid division-by-zero crashes.
+- **Statistical P-Value Gate**: Computes the Sharpe standard error and statistical p-value to reject luck:
+  $$\text{Sharpe Error} = \sqrt{\frac{1 + \frac{\text{Sharpe}^2}{2}}{N_{\text{days}}}}$$
+  $$\text{T-Stat} = \frac{\text{Sharpe}}{\text{Sharpe Error}}$$
+- **Dual Visualization Engine**: Generates interactive HTML Plotly dashboards (Equity curve, Drawdowns, and returns distributions) along with QuantStats Tearsheets comparing returns against the Nifty 50 index (`^NSEI`).
+- **Attribution Audit**: Calculates gross returns, net returns, and fee drags:
+  $$\text{Cost Drag} = \frac{\text{Total Transaction Fees}}{\text{Initial Cash}}$$
+  Flags warnings if costs consume $> 50\%$ of the gross strategy return.
 
 ---
 
-## 6. Technology Stack & Component Mapping
+## 🔄 End-to-End Pipeline Execution
 
-| Module Component | Technologies | Rationale |
+```mermaid
+flowchart LR
+    A[Natural Language Query] --> B[NLP Module: Validate & Plan]
+    B --> C[CodeGen Module: AST Sanitization & Compile Check]
+    C --> D[Data Module: Warm-up Padding & Cache Sync]
+    D --> E[Execution Module: Process Sandbox & VectorBT]
+    E --> F[Analytics Module: Risk Metrics & Plotly HTML Reports]
+```
+
+1. **Phase 1 Validation**: `QueryInterpreter` checks intent and parses tickers.
+2. **Task Graphing**: `DAGPlanner` maps dependencies and runs data routing.
+3. **Phase 2 Sanitization**: `AlphaAgent` codes the rules, applying AST lookahead guards and compile-checking the code.
+4. **Sandboxed Testing**: `BacktestEngine` runs the simulation, trims padding, and calculates VaR.
+5. **Phase 3 Statistics & Dashboarding**: `PerformanceAnalyzer` scores statistical viability, exports HTML logs, and prints the summary.
+
+---
+
+## 🛠️ Technology Stack & Mapping
+
+| Component | Technology | Rationale |
 | :--- | :--- | :--- |
-| **Language Runtime** | Python 3.10+ | Standard environment for quantitative development. |
-| **Orchestration & LLM** | Google Gemini (Gemini 2.5 Flash/Pro) | Advanced reasoning and strict Pydantic JSON schema compliance. |
-| **Graph Planning** | NetworkX | Flexible topological task sorting and scheduling. |
-| **Backtesting Core** | VectorBT | Extremely fast, Numba-compiled vectorized backtesting engine. |
-| **Analytical Cache** | DuckDB | Columnar file database optimized for lightning-fast pandas integrations. |
-| **Indicators Library** | Pandas-TA, TA-Lib | Comprehensive set of optimized technical indicator equations. |
-| **Risk Metrics** | NumPy, SciPy (stats) | High-speed statistics for VaR, CVaR, and standard errors. |
-| **Visualization & Reports**| Plotly, QuantStats | Rich, interactive HTML widgets and institutional statistical reports. |
+| **Orchestrator** | Python 3.10+ | Robust support for quantitative analysis libraries. |
+| **LLM Reasoning** | Google Gemini | Fast generation speeds with native Pydantic schema validation. |
+| **Dependency Graphs** | NetworkX | Simple DAG scheduling and topological task sorting. |
+| **Vector Engine** | VectorBT | Incredibly fast vectorized matrix simulations built with Numba. |
+| **Analytical Cache** | DuckDB | Embeddable OLAP database with zero-copy Pandas integration. |
+| **Technical math** | NumPy & SciPy | High-performance linear algebra and statistical calculators. |
+| **Report Cards** | QuantStats & Plotly | Polished tearsheets and interactive visual dashboards. |
 
 ---
 
-## 7. Environment Configuration
+## ⚙️ Configuration & Setup
 
-The application requires configuration variables. Create a `.env` file in the project root:
-
+### 1. Environment Config
+Create a `.env` file in the project root:
 ```env
-# Google Gemini Developer API Key
+# API Configuration
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-2.5-flash-lite
 
-# Optional: Neo4j Memory Agent Database
+# Optional Graph Database
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_neo4j_password
 
-# System Defaults
+# Configuration Defaults
 DEFAULT_INIT_CASH=100000
 DEFAULT_TIMEFRAME=1d
 DEFAULT_MARKET=IN
 ```
 
+### 2. Quickstart installation
+```bash
+# Clone the repository
+git clone https://github.com/A-RYAN-KR/Backtesting-Agent.git
+cd Backtesting-Agent
+
+# Setup virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows use: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
 ---
 
-## 8. Installation & Usage
+## 🚀 Usage Guide
 
-### Setup
-1. Clone the repository and navigate to the project directory.
-2. Create a virtual environment and install packages:
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file based on the environment configuration section.
-
-### Interactive Mode
-Run the agent in an interactive loop:
+### Interactive CLI Loop
+Run the interactive console to test queries sequentially:
 ```bash
 python main.py
 ```
-Type your query directly (e.g., *"Buy RELIANCE when RSI < 30, sell when RSI > 70 for the last 2 years"*).
+> **Example prompt:** *"Buy RELIANCE when RSI < 30, sell when RSI > 70 for the last 2 years"*
 
-### Command-Line Arguments Mode
-Run a single query directly:
+### Single-shot Mode
+Run a query immediately from the terminal:
 ```bash
 python main.py --query "Buy TCS when SMA 20 crosses above SMA 50 for the last 1 year" --market "IN"
 ```
 
 ---
 
-## 9. Project Directory Tree
+## 📂 Repository Structure
+
+<details>
+<summary><b>Click to expand project directory tree</b></summary>
 
 ```
 .
-├── config.py             # Global configurations & env loader
-├── main.py               # Application entry point & pipeline orchestrator
-├── README.md             # Project documentation & architecture details
-├── requirements.txt      # Project packages list
-├── .env                  # Environment keys & defaults
-├── cache/                # DuckDB analytical cache storage
+├── config.py             # Configuration loader & defaults
+├── main.py               # Unified pipeline runner & CLI entrypoint
+├── README.md             # Aesthetic documentation & system blueprints
+├── requirements.txt      # Required package list
+├── .env                  # Secrets configuration
+├── cache/                # DuckDB analytical cache database directory
 │   └── trading_cache.db
-├── reports/              # HTML charts & QuantStats output directory
+├── reports/              # Target directory for exported Plotly & Tearsheets
 └── modules/
     ├── __init__.py
-    ├── nlp_orchestration.py   # Module 1: Parser, DAG and Neo4j
-    ├── strategy_synthesis.py  # Module 2: Code compiler & AST sanitizer
-    ├── data_connectivity.py   # Module 3: DuckDB caching & YFinance fetcher
-    ├── execution_engine.py    # Module 4: Sandboxed VectorBT runner
-    └── analytics_audit.py     # Module 5: KPI & plotly / tearsheet generator
+    ├── nlp_orchestration.py   # Module 1: Query validator, planner, & Neo4j Memory
+    ├── strategy_synthesis.py  # Module 2: LLM programmer, AST rewriter, & Sanitizer
+    ├── data_connectivity.py   # Module 3: DuckDB interface & Yahoo Finance fetcher
+    ├── execution_engine.py    # Module 4: Multiprocessing executor & RiskAgent
+    └── analytics_audit.py     # Module 5: KPI analyzer & Plotly report card generator
 ```
+</details>
