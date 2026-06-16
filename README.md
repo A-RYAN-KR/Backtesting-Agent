@@ -63,7 +63,7 @@ The system is split into **five main components** that execute sequentially unde
 ### 🧠 Module 1: NLP & Orchestration ("The Brain")
 Responsible for parsing the trader's natural language input, validating indicators, constructing a Directed Acyclic Graph (DAG) for execution, and managing execution states.
 
-![NLP Architecture](docs/diagrams/NLP.png)
+![NLP Architecture](docs/assets/NLP.png)
 
 #### Key Design Pillars:
 - **Schema Integrity**: Uses `Pydantic` validation to force unstructured LLM outputs into typed, predictable structures (`TradingStrategyWithConfidence` schema) before compilation.
