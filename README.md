@@ -1,4 +1,4 @@
-# 🤖 Backtesting Agent: Autonomous Quantitative Research Pipeline
+<img width="1078" height="582" alt="image" src="https://github.com/user-attachments/assets/5f7e5f9e-2c24-40cd-9581-421ef4e169ed" /># 🤖 Backtesting Agent: Autonomous Quantitative Research Pipeline
 
 ## 1. Problem Statement
 In quantitative finance, the gap between a **trading idea** (expressed in natural language) and a **validated backtest** (executable vectorized code) is significant. Traders often face:
@@ -78,7 +78,7 @@ Responsible for parsing the trader's natural language input, validating indicato
 ### 📝 Module 2: Strategy Synthesis ("The Translator")
 Translates structured strategy configuration parameters into executable Python statements tailored for the `VectorBT` framework.
 
-![Strategy Synthesis Architecture](docs/diagrams/Strategy%20Synthesis.png)
+![Strategy Synthesis Architecture](docs/assets/Strategy%20Synthesis.png)
 
 #### Key Design Pillars:
 - **AST Modification (Lookahead Guard)**: Uses Python's native `ast` compiler to parse generated code into Abstract Syntax Trees. It targets and transforms assignments to `entries` and `exits` variables, appending `.shift(1).fillna(False)` to guarantee lookahead-bias safety at a structural syntax level rather than relying on prompts.
@@ -91,7 +91,7 @@ Translates structured strategy configuration parameters into executable Python s
 ### 💾 Module 3: Data & Market Connectivity ("The Heart")
 Handles the end-to-end data lifecycle, caching, and market routing for stock and index queries.
 
-![Data Connectivity Architecture](docs/diagrams/Data%20Connectivity.png)
+![Data Connectivity Architecture](docs/assets/Data%20Connectivity.png)
 
 #### Key Design Pillars:
 - **OLAP Caching with DuckDB**: Integrates a local analytical DuckDB cache storing timezone-naive historical pricing. Columnar storage ensures zero-copy DataFrame integrations, yielding highly efficient reads/writes compared to row-based engines.
@@ -104,7 +104,7 @@ Handles the end-to-end data lifecycle, caching, and market routing for stock and
 ### ⚙️ Module 4: Execution & Portfolio Engine ("The Engine")
 Sandboxes dynamic code compilation, standardizes execution data structures, and runs backtests.
 
-![Execution Engine Architecture](docs/diagrams/Execution%20Engine.png)
+![Execution Engine Architecture](docs/assets/Execution%20Engine.png)
 
 #### Key Design Pillars:
 - **Isolated Sandbox Execution**: Evaluates generated code inside a spawned child process (`multiprocessing` with a `"spawn"` method) with a strict 10-second timeout. This protects the orchestrator against infinite loops, memory leaks, or crashes in generated scripts.
@@ -119,7 +119,7 @@ Sandboxes dynamic code compilation, standardizes execution data structures, and 
 ### 📊 Module 5: Analytics & Audit ("The Eyes")
 Performs post-backtest diagnostics, parses returns, and outputs both console dashboards and visual tearsheets.
 
-![Analytics Architecture](docs/diagrams/Analytics.png)
+![Analytics Architecture](docs/assets/Analytics.png)
 
 #### Key Design Pillars:
 - **KPI Analysis**: Computes Sharpe, Sortino, Calmar, profit factors, and maximum drawdowns. Employs downside deviation for Sortino calculations to avoid penalizing positive volatility.
