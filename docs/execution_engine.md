@@ -40,6 +40,7 @@ sequenceDiagram
 1. **Isolated Worker Sandboxing**: Runs generated scripts in a separate process (`multiprocessing.Process` with a `"spawn"` start method) and enforces a strict 10-second timeout. This prevents infinite loops or resource leaks in the generated code from crashing the main process.
 2. **Casing Tolerance & Proxy Wrappers**: Financial libraries use different casing styles for data columns (e.g. `Volume` vs `volume`). The engine uses custom class wrappers to intercept column lookups, ensuring compatibility with the generated code.
 3. **Risk-Adjusted Sizing**: Integrates a `RiskAgent` directly into the backtesting flow to evaluate the tail risk of the strategy's return profile and adjust capital allocation recommendations accordingly.
+4. **Point-in-Time Universe Gating & Forced Liquidation**: Applies a dynamically generated index constituency mask to block entry signals when a stock is not in the index and forces absolute liquidation on the exact date of index removal, preventing lookahead and survivorship biases.
 
 ---
 
@@ -102,11 +103,15 @@ sequenceDiagram
     4. Unpacks and returns `entries`, `exits`, `debug_indicators`, and the `allocation` factor.
   - `execute_strategy_code(code: str, price_data: dict) -> dict`:
     1. Standardizes, cleans, and realigns pricing variables (`close_prices`, `open_prices`, `high_prices`, `low_prices`) and the volume vector to guarantee strict timeline alignment and numeric types.
-    2. Passes the code, aligned series, and the current `ticker` context to `_exec_with_timeout`.
-    3. Aligns the returned entry and exit signal indices.
-    4. Forces a terminal exit signal on the last day (`exits.iloc[-1] = True`) to safely flush open positions and prevent VectorBT/Numba compilation hangs.
-    5. Trims the 100-day warm-up padding using the `target_start_date` metadata.
-    6. Executes the backtest using VectorBT's signal execution engine, scaling starting cash by the dynamic allocation factor:
+    2. Dynamic Universe Mask Generation: If an `index_context` metadata attribute exists (e.g., set to `"nifty50"`), it fetches the trading-day-aligned universe mask matrix from the cache.
+    3. Passes the code, aligned series, and the current `ticker` context to `_exec_with_timeout`.
+    4. Aligns the returned entry and exit signal indices.
+    5. Point-in-Time Universe Gating & Forced Liquidation:
+       - **Gating**: Filters `entries` signals by logical AND with the constituency mask (`entries = entries & is_constituent`), preventing entries on days the stock is not in the index.
+       - **Forced Liquidation**: If the stock is removed from the index, a mandatory exit is triggered on that removal date (`was_removed_today = (is_constituent.shift(1) == True) & (is_constituent == False)` combined with `exits = exits | was_removed_today`).
+    6. Forces a terminal exit signal on the last day (`exits.iloc[-1] = True`) to safely flush open positions and prevent VectorBT/Numba compilation hangs.
+    7. Trims the 100-day warm-up padding using the `target_start_date` metadata.
+    8. Executes the backtest using VectorBT's signal execution engine, scaling starting cash by the dynamic allocation factor:
        ```python
         portfolio = vbt.Portfolio.from_signals(
             close_prices,
@@ -122,7 +127,7 @@ sequenceDiagram
             upon_dir_conflict='ignore'
         )
        ```
-    7. Formulates the final results dictionary, containing the portfolio object, win rate, trading metrics, and risk constraints.
+    9. Formulates the final results dictionary, containing the portfolio object, win rate, trading metrics, risk constraints, and the `is_constituent` boolean series context.
 
 ---
 

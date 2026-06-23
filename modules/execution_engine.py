@@ -314,6 +314,39 @@ class BacktestEngine:
         """
         results = {}
 
+        # Determine index context from ticker attributes
+        index_context = None
+        for ticker, df in price_data.items():
+            if hasattr(df, "attrs") and df.attrs.get("index_context"):
+                index_context = df.attrs.get("index_context")
+                break
+
+        # Determine pricing index (union of all DatetimeIndices in price_data)
+        pricing_index = None
+        for ticker, df in price_data.items():
+            if hasattr(df, "index"):
+                current_idx = df.index if isinstance(df.index, pd.DatetimeIndex) else pd.to_datetime(df.index)
+                if pricing_index is None:
+                    pricing_index = current_idx
+                else:
+                    pricing_index = pricing_index.union(current_idx)
+
+        if pricing_index is None:
+            pricing_index = pd.DatetimeIndex([])
+
+        from modules.data_connectivity import DuckDBCache
+        cache = DuckDBCache()
+        
+        if index_context:
+            try:
+                universe_mask_matrix = cache.get_historical_universe_mask(index_context, pricing_index)
+                print(f"  📌  Generated Point-in-Time universe mask matrix for index: {index_context}")
+            except Exception as e:
+                print(f"  ❌  Error loading index mask for {index_context}: {e}")
+                universe_mask_matrix = pd.DataFrame(True, index=pricing_index, columns=list(price_data.keys()))
+        else:
+            universe_mask_matrix = pd.DataFrame(True, index=pricing_index, columns=list(price_data.keys()))
+
         for ticker, df in price_data.items():
             print(f"\n  ⚙️  Running backtest for {ticker} …")
 
@@ -410,6 +443,19 @@ class BacktestEngine:
                 # Align indices
                 entries = entries.reindex(close_prices.index).fillna(False).astype(bool)
                 exits = exits.reindex(close_prices.index).fillna(False).astype(bool)
+
+                # PIT Universe Mask Gating & Liquidation Logic
+                if universe_mask_matrix is not None and ticker in universe_mask_matrix.columns:
+                    is_constituent = universe_mask_matrix[ticker].reindex(close_prices.index).fillna(False).astype(bool)
+                    
+                    # 1. Block entries when the stock is not officially in the index
+                    entries = entries & is_constituent
+                    
+                    # 2. Force mandatory liquidation on the exact day it is removed
+                    was_removed_today = (is_constituent.shift(1) == True) & (is_constituent == False)
+                    exits = exits | was_removed_today
+                else:
+                    is_constituent = pd.Series(True, index=close_prices.index)
 
                 # Trim warmup padding if present in metadata
                 if "target_start_date" in df.attrs:
@@ -582,6 +628,7 @@ class BacktestEngine:
                     },
                     "entries_count": int(entries.sum()),
                     "exits_count": int(exits.sum()),
+                    "is_constituent": is_constituent,
                 }
 
                 # ── DEBUG: Final result summary ─────────────────

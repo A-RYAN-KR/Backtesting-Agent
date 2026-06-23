@@ -286,6 +286,7 @@ class QueryInterpreter:
         and rules before outputting the final structure.
 
         IMPORTANT:
+        - INDEX RECOGNITION (CRITICAL): If the user requests to trade an entire index (e.g., 'nifty 50', 'banknifty', 'sensex'), do NOT attempt to list the individual stock tickers yourself. Instead, pass the exact index name as a string literal in the tickers array (e.g., ["nifty50"]). The downstream data router will handle historical component resolution.
         - duration should be a string like "2y", "6mo", "1y", "max" etc. that yfinance accepts as a period. If not specified or implied, default to a reasonable period (e.g., "2y").
         - tickers should be a list of ticker symbols, cleaned and uppercased (e.g., ["RELIANCE", "TCS"] or ["^NSEI"]).
         - entry_logic and exit_logic should be concise indicator-based rules.

@@ -44,6 +44,15 @@ class DuckDBCache:
                 UNIQUE(symbol, timestamp)
             )
         """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS historical_index_map (
+                index_name VARCHAR,
+                symbol VARCHAR,
+                start_date TIMESTAMP,
+                end_date TIMESTAMP,
+                UNIQUE(index_name, symbol, start_date)
+            )
+        """)
 
     def save(self, df: pd.DataFrame, symbol: str, source: str):
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
@@ -106,6 +115,34 @@ class DuckDBCache:
         except Exception as e:
             print(f"  ❌  Error reading cache range for {symbol}: {e}")
         return None, None
+
+    def get_historical_universe_mask(self, index_name: str, pricing_index: pd.DatetimeIndex) -> pd.DataFrame:
+        """Returns a trading-day aligned boolean mask matrix."""
+        index_clean = index_name.lower().replace(" ", "").replace("-", "")
+        events_df = self.conn.execute(
+            "SELECT symbol, start_date, end_date FROM historical_index_map WHERE index_name = ?", 
+            [index_clean]
+        ).df()
+        
+        unique_tickers = events_df['symbol'].unique().tolist()
+        mask_matrix = pd.DataFrame(False, index=pricing_index, columns=unique_tickers)
+        
+        for _, row in events_df.iterrows():
+            sym = row['symbol']
+            start = pd.to_datetime(row['start_date'])
+            end = pd.to_datetime(row['end_date'])
+            if start.tzinfo is not None:
+                start = start.tz_localize(None)
+            if end.tzinfo is not None:
+                end = end.tz_localize(None)
+            
+            p_index = pricing_index
+            if hasattr(p_index, 'tz') and p_index.tz is not None:
+                p_index = p_index.tz_localize(None)
+                
+            mask_matrix.loc[(p_index >= start) & (p_index <= end), sym] = True
+            
+        return mask_matrix
 
 
 # ═══════════════════════════════════════════════════════════
@@ -281,8 +318,38 @@ class DataRouter:
     def fetch_multiple(self, symbols: list[str], period: str = "2y", market: str = "IN") -> dict[str, pd.DataFrame]:
         """Fetch data for multiple symbols, returns dict of symbol → DataFrame.
         Gracefully skips tickers that return no data (delisted, misspelled, etc.)."""
-        result = {}
+        # Intercept index macros and resolve constituents
+        resolved_symbols = []
+        macro_contexts = {}
         for sym in symbols:
+            sym_clean = sym.strip().lower().replace(" ", "").replace("-", "")
+            if sym_clean == "nifty50":
+                target_start_date = parse_duration_to_start_date(period)
+                padded_start_date = target_start_date - pd.DateOffset(days=100)
+                now = pd.Timestamp.now()
+                try:
+                    active_rows = self.cache.conn.execute(
+                        "SELECT DISTINCT symbol FROM historical_index_map WHERE index_name = 'nifty50' AND start_date <= ? AND end_date >= ?",
+                        [now, padded_start_date]
+                    ).df()
+                    if not active_rows.empty:
+                        constituents = active_rows['symbol'].tolist()
+                        for c in constituents:
+                            macro_contexts[c] = 'nifty50'
+                        resolved_symbols.extend(constituents)
+                        print(f"  🔍  Resolved 'nifty50' macro to {len(constituents)} historical constituents.")
+                    else:
+                        print("  ⚠️  No historical constituents found in cache for 'nifty50'.")
+                except Exception as e:
+                    print(f"  ❌  Error querying historical constituents: {e}")
+            else:
+                resolved_symbols.append(sym)
+                
+        # Deduplicate resolved symbols preserving order
+        resolved_symbols = list(dict.fromkeys(resolved_symbols))
+
+        result = {}
+        for sym in resolved_symbols:
             sym_clean = sym.strip()
             print(f"  📡  Fetching {sym_clean} …")
             try:
@@ -298,6 +365,11 @@ class DataRouter:
                 if missing_cols:
                     print(f"  ⚠️  {sym_clean}: Missing required columns {missing_cols}. Skipping.")
                     continue
+                
+                # Stamp index context if ticker was unpacked from a macro
+                if sym_clean in macro_contexts:
+                    df.attrs["index_context"] = macro_contexts[sym_clean]
+                    
                 result[sym_clean] = df
                 print(f"  ✅  {sym_clean}: {len(df)} rows fetched")
             else:

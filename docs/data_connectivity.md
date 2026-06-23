@@ -36,6 +36,7 @@ flowchart TD
 1. **Padded Indicator Warm-up**: Technical indicators (especially Exponential Moving Averages, MACD, and RSI) rely on decay functions or lookback windows. If a strategy backtest starts on day 0, the first few indicator records will be `NaN` or mathematically inaccurate. To address this, the data layer fetches an extra 100 days of history, passes the padded data to the indicator compiler, and then trims the padding before evaluation.
 2. **DuckDB OLAP Cache**: Rather than using slower JSON, CSV, or SQLite files, the system uses `DuckDB`. As a columnar database, DuckDB is optimized for analytical queries and pandas integrations, returning results directly as DataFrames.
 3. **Graceful Cache Invalidation**: The cache validates both the start date and end date to prevent gaps. If a trader requests a larger historical range than what is cached, or if the cached data is more than 5 days old, the system automatically triggers a fresh download and updates the cache.
+4. **Point-in-Time Index Constituent Resolution**: Real-world indexes (like the Nifty 50) reconstitute periodically (e.g., adding or removing stocks). Performing backtests on the *current* list of index members introduces survivorship bias. The connectivity module incorporates a dynamic historical mapping system that queries the historical index records to resolve the active constituents for the requested period.
 
 ---
 
@@ -60,7 +61,9 @@ flowchart TD
   - `db_path`: Filepath to the DuckDB database (default: `/cache/trading_cache.db`).
   - `conn`: DuckDB connection instance.
 * **Methods**:
-  - `__init__(db_path: str)`: Connects to the database and initializes the `ohlcv_data` table with a `UNIQUE(symbol, timestamp)` index to prevent duplicate records.
+  - `__init__(db_path: str)`: Connects to the database and initializes:
+    1. The `ohlcv_data` table with a `UNIQUE(symbol, timestamp)` index to prevent duplicate records.
+    2. The `historical_index_map` table with schema `(index_name VARCHAR, symbol VARCHAR, start_date TIMESTAMP, end_date TIMESTAMP)` and a `UNIQUE(index_name, symbol, start_date)` index to track historical index constituency changes.
   - `save(df: pd.DataFrame, symbol: str, source: str)`: Cleans and standardizes the DataFrame:
     1. Extracts or constructs the timestamp index.
     2. Strips timezones (`tz_localize(None)`) to maintain database compatibility.
@@ -69,6 +72,7 @@ flowchart TD
   - `load(symbol: str) -> pd.DataFrame`: Retrieves the sorted historical data for a symbol. It maps database columns back to Title Case (`Open`, `High`, `Low`, `Close`, `Volume`) before returning to match standard pandas conventions.
   - `has_data(symbol: str) -> bool`: Verifies if records exist for a symbol.
   - `get_cache_range(symbol: str) -> tuple`: Returns the `(min_timestamp, max_timestamp)` for a cached symbol to check historical coverage.
+  - `get_historical_universe_mask(index_name: str, pricing_index: pd.DatetimeIndex) -> pd.DataFrame`: Queries the `historical_index_map` table and returns a trading-day-aligned boolean mask matrix showing which stocks were active constituents of the specified index at each timestamp in `pricing_index`.
 
 ---
 
@@ -103,7 +107,13 @@ flowchart TD
     4. Verifies if the cache covers the padded range and is not stale (older than 5 days).
     5. If valid, loads from the cache, slices the index to match the padded start date, and returns.
     6. If invalid, downloads the data from the appropriate agent, saves it to the cache, and attaches `target_start_date` to the DataFrame's metadata (`df.attrs`).
-  - `fetch_multiple(symbols: list, period: str, market: str) -> dict`: Fetches data for a list of tickers. It validates that the returned DataFrames contain all required columns (`Open`, `High`, `Low`, `Close`, `Volume`), skipping any symbols with incomplete data.
+  - `fetch_multiple(symbols: list, period: str, market: str) -> dict`: Fetches data for multiple symbols. It performs dynamic **Point-in-Time Index constituent resolution**:
+    1. Intercepts any index macro (e.g., `"nifty50"`).
+    2. Resolves historical constituents for the given backtest period by querying the `historical_index_map` cache table in DuckDB.
+    3. Merges and deduplicates resolved constituent tickers with other explicit symbols.
+    4. Fetches market data for each ticker (from cache or via the data agents).
+    5. Stamping context: If a ticker was resolved as an active constituent of an index, it stamps the DataFrame's metadata `df.attrs["index_context"] = "nifty50"`.
+    6. Filters and returns a dictionary of `symbol -> DataFrame`, validating that all required OHLCV columns exist and gracefully skipping tickers with missing or invalid data.
 
 ---
 

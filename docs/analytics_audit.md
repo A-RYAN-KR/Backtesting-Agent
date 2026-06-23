@@ -72,7 +72,9 @@ flowchart TD
     - Assigns statistical score: `phase_3_score = 1.0 - p_value`.
     - Penalizes `phase_3_score` by `50%` if win rate is absurdly high (>95%) or low (<10%).
 * **Methods**:
-  - `compute_metrics(portfolio) -> dict`: Extracts the return series from a VectorBT portfolio, performs calculations, and returns a dictionary of metrics including Phase 3 scores.
+  - `compute_metrics(portfolio, is_constituent: pd.Series | None = None) -> dict`: Extracts the return series from a VectorBT portfolio, performs calculations, and returns a dictionary of metrics including Phase 3 scores.
+    * **Constituent Alignment**: If `is_constituent` is provided, the return series is aligned and sliced to only include days when the stock was an active member of the index. This active period returns subset is used to calculate diagnostics like the zero-return percentage (`zero_pct`), preventing inactive periods from skewing the idle-strategy warning triggers.
+    * **Active Period Reporting**: Diagnostic logs print the count of active constituent days relative to the total backtest duration.
 
 ---
 

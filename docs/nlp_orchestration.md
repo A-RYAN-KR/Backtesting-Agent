@@ -114,8 +114,9 @@ sequenceDiagram
     - `entry_logic` (str): Plain indicator-based entry signals.
     - `exit_logic` (str): Plain indicator-based exit signals.
     - `duration` (str): Standard yfinance duration format (e.g. "1y", "2y").
-    - `tickers` (list[str]): Sanitized and capitalized symbols.
+    - `tickers` (list[str]): Sanitized and capitalized symbols (or index macros like `["nifty50"]` for entire index strategies).
     - `capital_allocation` (str): Details on how capital should be split among the tickers (e.g., '50% RELIANCE, 50% TCS'). Defaults to '100% per ticker'.
+  - **Index Recognition Policy**: If the trader requests to run a strategy on an entire index (e.g., "Nifty 50"), the interpreter intercepts this and populates the `tickers` array with the index macro symbol (`["nifty50"]`) rather than attempting to expand the list of constituent tickers at the LLM reasoning level.
   - **Early-Exit Gate**: Calculates an intent score: `(0.4 * linguistic_confidence) + (0.6 * numerical_completeness)`. If it is less than `0.70`, it returns `"REJECTED"` and halts execution.
 
 #### `DAGPlanner`

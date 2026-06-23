@@ -45,7 +45,7 @@ class PerformanceAnalyzer:
     """Calculates comprehensive performance metrics from backtest results."""
 
     @staticmethod
-    def compute_metrics(portfolio) -> dict:
+    def compute_metrics(portfolio, is_constituent: pd.Series | None = None) -> dict:
         """Extract all key metrics from a VectorBT portfolio."""
         returns = portfolio.returns().fillna(0.0)
         cumulative = (1 + returns).cumprod()
@@ -57,7 +57,15 @@ class PerformanceAnalyzer:
         print(f"  | Positive days:    {(returns > 0).sum()}")
         print(f"  | Negative days:    {(returns < 0).sum()}")
         print(f"  | NaN days:         {returns.isna().sum()}")
-        zero_pct = (returns == 0).sum() / len(returns) * 100 if len(returns) > 0 else 0
+        
+        if is_constituent is not None:
+            is_constituent_aligned = is_constituent.reindex(returns.index).fillna(False).astype(bool)
+            active_returns = returns[is_constituent_aligned]
+            zero_pct = (active_returns == 0).sum() / len(active_returns) * 100 if len(active_returns) > 0 else 0
+            print(f"  | Active period days: {len(active_returns)} (out of {len(returns)} total days)")
+        else:
+            zero_pct = (returns == 0).sum() / len(returns) * 100 if len(returns) > 0 else 0
+            
         if zero_pct > 80:
             print(f"  | [WARNING] {zero_pct:.1f}% zero-return days - strategy may be idle most of the time!")
         print(f"  +----------------------------------------------------")
@@ -393,9 +401,10 @@ class ReportGenerator:
             print(f"  └────────────────────────────────────────────────────")
 
             portfolio = result["portfolio"]
+            is_constituent = result.get("is_constituent")
 
             # Performance metrics
-            metrics = PerformanceAnalyzer.compute_metrics(portfolio)
+            metrics = PerformanceAnalyzer.compute_metrics(portfolio, is_constituent)
 
             # Factor attribution
             attribution = AuditAgent.attribute_returns(result)
