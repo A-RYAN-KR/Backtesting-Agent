@@ -39,27 +39,29 @@ The following diagram traces the lifecycle of an index strategy through the 5-mo
 
 ```mermaid
 graph TD
-    A[User Query: 'Buy Nifty Bank when...'] -->|Step 1: NLP Parse| B[QueryInterpreter]
-    B -->|Resolves 'Nifty Bank' to macro| C[Tickers: 'niftybank']
-    
+    A["User Query: 'Buy Nifty Bank when...'"] -->|Step 1: NLP Parse| B[QueryInterpreter]
+    B -->|Resolves 'Nifty Bank' to macro| C["Tickers: 'niftybank'"]
+
     C -->|Step 3: Data Connectivity| D[DataRouter]
-    D -->|Fast DB Check: SELECT EXISTS| E[DuckDB Cache: historical_index_map]
-    
+    D -->|Fast DB Check: SELECT EXISTS| E["DuckDB Cache: historical_index_map"]
+
     E -->|True: Registered Index| F[Dynamic Constituent Query]
     F -->|Retrieves active tickers in range| G[Resolved Ticker List]
-    
-    G -->|Fetches price data| H[Yahoo Finance / Cache]
+
+    G -->|Fetches price data| H["Yahoo Finance / Cache"]
     H -->|Stamps metadata: index_context = 'niftybank'| I[Pricing DataFrames]
-    
+
     I -->|Step 4: Execution Engine| J[BacktestEngine]
     J -->|Queries cache for mask| K[get_historical_universe_mask]
     K -->|Generates daily boolean matrix| L[PIT Universe Mask Matrix]
-    
-    L -->|Gates entry signals| M[entries = entries & is_constituent]
-    L -->|Forces liquidation on removal| N[exits = exits | was_removed_today]
-    
-    M & N -->|Executes trades at T+1 Open| O[VectorBT Portfolio Run]
-    O -->|Step 5: Analytics & Audit| P[ReportGenerator & QuantStats]
+
+    L -->|Gates entry signals| M["entries = entries & is_constituent"]
+    L -->|Forces liquidation on removal| N["exits = exits &#124; was_removed_today"]
+
+    M -->|Executes trades at T+1 Open| O[VectorBT Portfolio Run]
+    N -->|Executes trades at T+1 Open| O
+
+    O -->|Step 5: Analytics & Audit| P["ReportGenerator & QuantStats"]
 ```
 
 ---

@@ -18,7 +18,6 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import DEFAULT_INIT_CASH
 
-# ─── Timeout for exec() to prevent infinite loops from LLM code ────
 EXEC_TIMEOUT_SECONDS = 10
 
 
