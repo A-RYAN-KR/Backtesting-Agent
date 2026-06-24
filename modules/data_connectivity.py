@@ -19,6 +19,24 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import CACHE_DIR
 
+def print(*args, sep=" ", end="\n", file=None, flush=False):
+    """
+    Safe print function for Windows terminals. Gracefully encodes Unicode
+    characters by substituting unrecognized glyphs with placeholders instead of crashing.
+    """
+    target_file = file if file is not None else sys.stdout
+    text = sep.join(map(str, args)) + end
+    try:
+        target_file.write(text)
+        if flush:
+            target_file.flush()
+    except UnicodeEncodeError:
+        encoding = getattr(target_file, "encoding", None) or "ascii"
+        encoded = text.encode(encoding, errors="replace").decode(encoding)
+        target_file.write(encoded)
+        if flush:
+            target_file.flush()
+
 
 # ═══════════════════════════════════════════════════════════
 #  DuckDB Cache
@@ -323,25 +341,37 @@ class DataRouter:
         macro_contexts = {}
         for sym in symbols:
             sym_clean = sym.strip().lower().replace(" ", "").replace("-", "")
-            if sym_clean == "nifty50":
+            
+            # Dynamically check if this is a registered index macro in our database
+            is_index = False
+            try:
+                res = self.cache.conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM historical_index_map WHERE index_name = ?)", 
+                    [sym_clean]
+                ).fetchone()
+                is_index = res[0] if res else False
+            except Exception as e:
+                print(f"  ❌  Error checking index existence for {sym_clean}: {e}")
+
+            if is_index:
                 target_start_date = parse_duration_to_start_date(period)
                 padded_start_date = target_start_date - pd.DateOffset(days=100)
                 now = pd.Timestamp.now()
                 try:
                     active_rows = self.cache.conn.execute(
-                        "SELECT DISTINCT symbol FROM historical_index_map WHERE index_name = 'nifty50' AND start_date <= ? AND end_date >= ?",
-                        [now, padded_start_date]
+                        "SELECT DISTINCT symbol FROM historical_index_map WHERE index_name = ? AND start_date <= ? AND end_date >= ?",
+                        [sym_clean, now, padded_start_date]
                     ).df()
                     if not active_rows.empty:
                         constituents = active_rows['symbol'].tolist()
                         for c in constituents:
-                            macro_contexts[c] = 'nifty50'
+                            macro_contexts[c] = sym_clean
                         resolved_symbols.extend(constituents)
-                        print(f"  🔍  Resolved 'nifty50' macro to {len(constituents)} historical constituents.")
+                        print(f"  [INFO] Resolved '{sym_clean}' macro to {len(constituents)} historical constituents.")
                     else:
-                        print("  ⚠️  No historical constituents found in cache for 'nifty50'.")
+                        print(f"  [WARNING] No historical constituents found in cache for '{sym_clean}'.")
                 except Exception as e:
-                    print(f"  ❌  Error querying historical constituents: {e}")
+                    print(f"  [ERROR] Error querying historical constituents for {sym_clean}: {e}")
             else:
                 resolved_symbols.append(sym)
                 
