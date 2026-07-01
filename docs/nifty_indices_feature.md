@@ -6,7 +6,7 @@ This document describes the design, architecture, and implementation of the **Ge
 
 ## 1. Feature Overview
 
-In historical backtesting, testing on an index using only its current members introduces **survivorship bias** (ignoring companies that were delisted or removed) and **look-ahead bias** (trading companies before they were officially added or keeping them after they were removed). 
+In  backtesting, testing on an index using only its current members introduces **survivorship bias** (ignoring companies that were delisted or removed) and **look-ahead bias** (trading companies before they were officially added or keeping them after they were removed). 
 
 Our system solves this by dynamically reconstructing the exact constituents of any supported index for **every single trading day** in the backtest window, and applying a strict daily gate on trading signals.
 
@@ -30,6 +30,8 @@ The system supports a curated list of liquid Nifty indices. Their live sources, 
 | **Nifty Bank** | `^NSEBANK` | `niftybank` | `.../ind_niftybanklist.csv` | High-accuracy seed tracking major rebalancings (Yes Bank exit, Bandhan Bank entry, AU Bank, PNB, Canara Bank, etc.). |
 | **Nifty IT** | `^CNXIT` | `niftyit` | `.../ind_niftyitlist.csv` | High-accuracy seed tracking major rebalancings (LTIM, Coforge, Mphasis, Persistent, LTTS additions; Mindtree, Hexaware removals). |
 | **Nifty Next 50** | `^NSEJR` | `niftynext50` | `.../ind_niftynext50list.csv` | Current constituents seeded as active from **2010 to 2099** (accurate for recent periods). |
+| **Nifty 100** | `^CNX100` | `nifty100` | `.../ind_nifty100list.csv` | Current constituents seeded as active from **2010 to 2099** (accurate for recent periods). |
+| **Nifty 200** | `^CNX200` | `nifty200` | `.../ind_nifty200list.csv` | Current constituents seeded as active from **2010 to 2099** (accurate for recent periods). |
 
 ---
 
@@ -155,3 +157,19 @@ python main.py --query "Buy Nifty Bank when RSI < 30, sell when RSI > 70 for the
   * **Router**: Prints `[INFO] Resolved 'niftyit' macro to 10 historical constituents.`, downloading and caching `TCS`, `INFY`, `HCLTECH`, `WIPRO`, `TECHM`, `LTIM`, `PERSISTENT`, `COFORGE`, `MPHASIS`, and `LTTS`.
   * **PIT Gating**: Prints `📌 Generated Point-in-Time universe mask matrix for index: niftyit`.
   * **Execution**: Runs the strategy across the IT portfolio, strictly gating trades based on historical membership dates.
+
+### Sample Query C: Nifty 100 (RSI Strategy)
+* **Query**: `"Buy Nifty 100 when RSI < 30, sell when RSI > 70 for the last 6 months"`
+* **Expected Log Trace**:
+  * **NLP**: Outputs `Tickers: ['nifty100']`, `Duration: 6mo`.
+  * **Router**: Prints `[INFO] Resolved 'nifty100' macro to 100 historical constituents.`, downloading and caching them.
+  * **PIT Gating**: Prints `📌 Generated Point-in-Time universe mask matrix for index: nifty100`.
+  * **Execution**: Runs the strategy across the Nifty 100 portfolio, strictly gating trades based on daily membership.
+
+### Sample Query D: Nifty 200 (Moving Average Crossover)
+* **Query**: `"Buy Nifty 200 when SMA 10 crosses above SMA 30, sell when SMA 10 crosses below SMA 30 for the last 6 months"`
+* **Expected Log Trace**:
+  * **NLP**: Outputs `Tickers: ['nifty200']`, `Duration: 6mo`.
+  * **Router**: Prints `[INFO] Resolved 'nifty200' macro to 200 historical constituents.`, downloading and caching them.
+  * **PIT Gating**: Prints `📌 Generated Point-in-Time universe mask matrix for index: nifty200`.
+  * **Execution**: Runs the strategy across the Nifty 200 portfolio, strictly gating trades based on daily membership.

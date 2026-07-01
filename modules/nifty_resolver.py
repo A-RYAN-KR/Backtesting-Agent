@@ -124,6 +124,69 @@ SUPPORTED_INDICES = {
             "TATAPOWER", "TVSMOTOR", "UNITDSPR", "VBL", "ZOMATO", "ZYDUSLIFE", "JIOFIN", "TRENT"
         ],
         "rebalancing_log": []
+    },
+    "nifty100": {
+        "url": "https://archives.nseindia.com/content/indices/ind_nifty100list.csv",
+        "fallback": [
+            "ABB", "ADANIENSOL", "ADANIENT", "ADANIGREEN", "ADANIPORTS", "ADANIPOWER",
+            "AMBUJACEM", "APOLLOHOSP", "ASIANPAINT", "DMART", "AXISBANK", "BAJAJ-AUTO",
+            "BAJFINANCE", "BAJAJFINSV", "BAJAJHLDNG", "BANKBARODA", "BEL", "BPCL",
+            "BHARTIARTL", "BOSCHLTD", "BRITANNIA", "CGPOWER", "CANBK", "CHOLAFIN",
+            "CIPLA", "COALINDIA", "CUMMINSIND", "DLF", "DIVISLAB", "DRREDDY",
+            "EICHERMOT", "ETERNAL", "GAIL", "GODREJCP", "GRASIM", "HCLTECH",
+            "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HINDALCO", "HAL", "HINDUNILVR",
+            "HINDZINC", "HYUNDAI", "ICICIBANK", "ITC", "INDHOTEL", "IOC",
+            "IRFC", "INFY", "INDIGO", "JSWSTEEL", "JINDALSTEL", "JIOFIN",
+            "KOTAKBANK", "LTM", "LT", "LODHA", "M&M", "MARUTI",
+            "MAXHEALTH", "MAZDOCK", "MUTHOOTFIN", "NTPC", "NESTLEIND", "ONGC",
+            "PIDILITIND", "PFC", "POWERGRID", "PNB", "RECLTD", "RELIANCE",
+            "SBILIFE", "MOTHERSON", "SHREECEM", "SHRIRAMFIN", "ENRIN", "SIEMENS",
+            "SOLARINDS", "SBIN", "SUNPHARMA", "TVSMOTOR", "TATACAP", "TCS",
+            "TATACONSUM", "TMCV", "TMPV", "TATAPOWER", "TATASTEEL", "TECHM",
+            "TITAN", "TORNTPHARM", "TRENT", "ULTRACEMCO", "UNIONBANK", "UNITDSPR",
+            "VBL", "VEDL", "WIPRO", "ZYDUSLIFE"
+        ],
+        "rebalancing_log": []
+    },
+    "nifty200": {
+        "url": "https://archives.nseindia.com/content/indices/ind_nifty200list.csv",
+        "fallback": [
+            "360ONE", "ABB", "APLAPOLLO", "AUBANK", "ADANIENSOL", "ADANIENT",
+            "ADANIGREEN", "ADANIPORTS", "ADANIPOWER", "ATGL", "ABCAPITAL", "ALKEM",
+            "AMBUJACEM", "APOLLOHOSP", "ASHOKLEY", "ASIANPAINT", "ASTRAL", "AUROPHARMA",
+            "DMART", "AXISBANK", "BSE", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
+            "BAJAJHLDNG", "BANKBARODA", "BANKINDIA", "BDL", "BEL", "BHARATFORG",
+            "BHEL", "BPCL", "BHARTIARTL", "GROWW", "BIOCON", "BLUESTARCO",
+            "BOSCHLTD", "BRITANNIA", "CGPOWER", "CANBK", "CHOLAFIN", "CIPLA",
+            "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL", "CONCOR", "COROMANDEL",
+            "CUMMINSIND", "DLF", "DABUR", "DIVISLAB", "DIXON", "DRREDDY",
+            "EICHERMOT", "ETERNAL", "EXIDEIND", "NYKAA", "FEDERALBNK", "FORTIS",
+            "GAIL", "GVT&D", "GMRAIRPORT", "GLENMARK", "GODFRYPHLP", "GODREJCP",
+            "GODREJPROP", "GRASIM", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE",
+            "HAVELLS", "HEROMOTOCO", "HINDALCO", "HAL", "HINDPETRO", "HINDUNILVR",
+            "HINDZINC", "POWERINDIA", "HUDCO", "HYUNDAI", "ICICIBANK", "ICICIGI",
+            "ICICIAMC", "IDFCFIRSTB", "ITC", "INDIANB", "INDHOTEL", "IOC",
+            "IRCTC", "IRFC", "IREDA", "INDUSTOWER", "INDUSINDBK", "NAUKRI",
+            "INFY", "INDIGO", "JSWENERGY", "JSWSTEEL", "JINDALSTEL", "JIOFIN",
+            "JUBLFOOD", "KEI", "KPITTECH", "KALYANKJIL", "KOTAKBANK", "LTF",
+            "LGEINDIA", "LICHSGFIN", "LTM", "LT", "LAURUSLABS", "LENSKART",
+            "LODHA", "LUPIN", "MRF", "M&MFIN", "M&M", "MANKIND",
+            "MARICO", "MARUTI", "MFSL", "MAXHEALTH", "MAZDOCK", "MOTILALOFS",
+            "MPHASIS", "MCX", "MUTHOOTFIN", "NHPC", "NMDC", "NTPC",
+            "NATIONALUM", "NESTLEIND", "OBEROIRLTY", "ONGC", "OIL", "PAYTM",
+            "OFSS", "POLICYBZR", "PIIND", "PAGEIND", "PATANJALI", "PERSISTENT",
+            "PHOENIXLTD", "PIDILITIND", "POLYCAB", "PFC", "POWERGRID", "PREMIERENE",
+            "PRESTIGE", "PNB", "RECLTD", "RADICO", "RVNL", "RELIANCE",
+            "SBICARD", "SBILIFE", "SRF", "MOTHERSON", "SHREECEM", "SHRIRAMFIN",
+            "ENRIN", "SIEMENS", "SOLARINDS", "SBIN", "SAIL", "SUNPHARMA",
+            "SUPREMEIND", "SUZLON", "SWIGGY", "TVSMOTOR", "TATACAP", "TATACOMM",
+            "TCS", "TATACONSUM", "TATAELXSI", "TATAINVEST", "TMCV", "TMPV",
+            "TATAPOWER", "TATASTEEL", "TECHM", "TITAN", "TORNTPHARM", "TRENT",
+            "TIINDIA", "UPL", "ULTRACEMCO", "UNIONBANK", "UNITDSPR", "VBL",
+            "VEDL", "VMM", "IDEA", "VOLTAS", "WAAREEENER", "WIPRO",
+            "YESBANK", "ZYDUSLIFE"
+        ],
+        "rebalancing_log": []
     }
 }
 
